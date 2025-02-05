@@ -1,3 +1,4 @@
+//用于服务端
 require('dotenv').config();
 const express = require("express");
 const { exec } = require('child_process');
@@ -12,7 +13,9 @@ app.use(cors());
 
 // info 页面路由
 app.get("/info", function (req, res) {
-    const commandToRun = "cd ~/serv00-play/ && bash keepalive.sh";
+    // 在访问 /info 时执行保活命令,可自定义
+    // const commandToRun = "cd ~/serv00-play/singbox/ && bash start.sh && cd ~/.nezha-dashboard/ && bash start.sh&";
+    const commandToRun = "cd ~/serv00-play/ && bash keepalive.sh"; 
     exec(commandToRun, function (err, stdout, stderr) {
         if (err) {
             console.log("命令执行错误: " + err);
@@ -29,9 +32,11 @@ app.get("/info", function (req, res) {
 
 // list 路由 (直接输出美化JSON)
 app.get("/list", function (req, res) {
+    // 在访问 /list 时读取进程信息
     exec('ps aux', (error, stdout, stderr) => {
         if (error) return res.status(500).json({ status: "error" });
 
+        //进程名输出简化处理
         const processes = stdout.toString()
             .split('\n')
             .slice(1)
@@ -70,7 +75,7 @@ app.get("/list", function (req, res) {
                     appName = appName.replace(/:.*/, ''); // 清理守护进程描述
                     commandName = appName;
                 }
-
+                //返回值设定，可自行按需修改
                 return {
                     USER: matches[1],
                     PID: parseInt(matches[2]),
