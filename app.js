@@ -1,4 +1,3 @@
-//用于服务端
 require('dotenv').config();
 const express = require("express");
 const { exec } = require('child_process');
@@ -13,9 +12,7 @@ app.use(cors());
 
 // info 页面路由
 app.get("/info", function (req, res) {
-    // 在访问 /info 时执行保活命令,可自定义
-    // const commandToRun = "cd ~/serv00-play/singbox/ && bash start.sh && cd ~/.nezha-dashboard/ && bash start.sh&";
-    const commandToRun = "cd ~/serv00-play/ && bash keepalive.sh"; 
+    const commandToRun = "cd ~/serv00-play/ && bash keepalive.sh";
     exec(commandToRun, function (err, stdout, stderr) {
         if (err) {
             console.log("命令执行错误: " + err);
@@ -32,11 +29,9 @@ app.get("/info", function (req, res) {
 
 // list 路由 (直接输出美化JSON)
 app.get("/list", function (req, res) {
-    // 在访问 /list 时读取进程信息
-    exec('ps aux', (error, stdout, stderr) => {
+    exec('ps aux | grep -vE "grep|node|ps|php"', (error, stdout, stderr) => {
         if (error) return res.status(500).json({ status: "error" });
 
-        //进程名输出简化处理
         const processes = stdout.toString()
             .split('\n')
             .slice(1)
@@ -63,7 +58,7 @@ app.get("/list", function (req, res) {
                     const [mainProgramPath] = rawCommand.split(/\s+/);
                     const programSegments = mainProgramPath.split('/');
                     let appName = programSegments.pop() || '';
-                    
+
                     // 处理解释器执行脚本场景 (如 bash /path/script.sh)
                     if (['bash', 'sh', 'python', 'python3'].includes(appName)) {
                         const scriptPath = rawCommand.split(/\s+/)[1] || '';
@@ -71,14 +66,20 @@ app.get("/list", function (req, res) {
                         const scriptName = scriptSegments.pop() || '';
                         if (scriptName) appName = scriptName;
                     }
-                    
+
                     appName = appName.replace(/:.*/, ''); // 清理守护进程描述
                     commandName = appName;
                 }
-                //返回值设定，可自行按需修改
+
                 return {
                     USER: matches[1],
                     PID: parseInt(matches[2]),
+                    "%CPU": parseFloat(matches[3]),
+                    "%MEM": parseFloat(matches[4]),
+                    VSZ: parseInt(matches[5]),
+                    RSS: parseInt(matches[6]),
+                    TT: matches[7],
+                    STAT: matches[8],
                     STARTED: matches[9],
                     TIME: matches[10],
                     COMMAND: commandName
