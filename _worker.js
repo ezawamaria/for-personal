@@ -4,9 +4,9 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname.split("/").filter(Boolean);
       const token = env.TOKEN || "token";  // 获取 TOKEN（用于限制路径）
-      const LISTKV = env.LISTKV;  // 配置存储 KV 命名空间 - 监控列表
-      const INFOKV = env.INFOKV;  // 配置存储 KV 命名空间 - 服务信息
-      const name = env.NAME || "服务监控系统";  //设置站点标题
+      const LISTKV = env.LISTKV;  // 配置存储 KV 命名空间 - 进程查看地址
+      const INFOKV = env.INFOKV;  // 配置存储 KV 命名空间 - 执行命令地址
+      const name = env.NAME || "serv00进程管理";  //设置站点标题
       const img = env.IMG || "";  //背景图片地址 
 
       // 统一处理 KV 写入重试，确保数据持久化
@@ -30,7 +30,7 @@ export default {
       if (path.length === 2 && path[0] === token && path[1] === "edit" && request.method === "POST") {
           try {
               const rawContent = await request.text();  // 获取 POST 请求的文本内容
-              const separatorIndex = rawContent.indexOf('###');  // 配置块的分隔符
+              const separatorIndex = rawContent.indexOf('###');  // 配置块的分隔符，不要在list结尾填写###，填入反而会出错
 
               // 确保配置内容有效且包含分隔符
               if (separatorIndex <= 0 || separatorIndex >= rawContent.length - 1) {
@@ -282,8 +282,8 @@ export default {
         <div class="dashboard">
           <div class="panel">
             <div class="panel-header">
-              <h2 class="panel-title">进程监控</h2>
-              <button class="start-all-btn" onclick="viewAllProcesses()">查看所有</button>
+              <h2 class="panel-title">查询进程</h2>
+              <button class="start-all-btn" onclick="viewAllProcesses()">查询所有</button>
             </div>
             <div class="btn-group">
               ${generateButtons(list, 'process')}
