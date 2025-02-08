@@ -32,9 +32,6 @@ export default {
         const rawContent = await request.text();  // 获取 POST 请求的文本内容
         const separatorIndex = rawContent.indexOf('###');  // 配置块的分隔符，不要在list结尾填写###，填入反而会出错
 
-        // 确保配置内容有效且包含分隔符
-        if (separatorIndex <= 0 || separatorIndex >= rawContent.length - 1) {
-          throw new Error("必须包含两个有效配置块，用 ### 分隔");
         }
 
         // 提取两个配置块
