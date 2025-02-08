@@ -32,8 +32,6 @@ export default {
         const rawContent = await request.text();  // 获取 POST 请求的文本内容
         const separatorIndex = rawContent.indexOf('###');  // 配置块的分隔符，不要在list结尾填写###，填入反而会出错
 
-        }
-
         // 提取两个配置块
         let newList = rawContent.substring(0, separatorIndex).trim();
         let newInfo = rawContent.substring(separatorIndex + 3).trim();
@@ -108,214 +106,214 @@ export default {
             }).join("");
         };
 
-              // 生成完整的 HTML 看板
-              const html = `
-      <!DOCTYPE html>
-      <html lang="zh-CN">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>${name}</title>
-        <style>
-          :root {
-            --process-color: #4CAF50;
-            --service-color: #2196F3;
-            --glass-opacity: 0.8;
+        // 生成完整的 HTML 看板
+        const html = `
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${name}</title>
+  <style>
+    :root {
+      --process-color: #4CAF50;
+      --service-color: #2196F3;
+      --glass-opacity: 0.8;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: url('${img}') center/cover fixed;
+      background-size: cover;
+      background-position: center;
+    }
+  .dashboard {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 30px;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 80px 20px 20px;
+    }
+  .panel {
+      background: rgba(255,255,255,var(--glass-opacity));
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+      width: 100%;
+      box-sizing: border-box;
+    }
+  .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+  .panel-title {
+      margin: 0;
+      font-size: 1.5rem;
+      color: #2c3e50;
+    }
+  .btn-group {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+  .api-btn {
+      padding: 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-size: 0.9rem;
+      text-align: center;
+      color: white;
+    }
+  .process-btn {
+      background: var(--process-color);
+    }
+  .service-btn {
+      background: var(--service-color);
+    }
+  .api-btn:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+  .start-all-btn {
+      padding: 8px 16px;
+      background: #2196F3;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+  .result-box {
+      padding: 15px;
+      background: rgba(255,255,255,0.9);
+      border-radius: 6px;
+      min-height: 200px;
+      font-family: monospace;
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+      word-break: break-all;
+      overflow-y: auto;
+      max-height: 400px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+  .timestamp {
+      color: #666;
+      font-size: 0.8rem;
+      margin-bottom: 5px;
+    }
+  .edit-btn {
+      position: fixed;
+      top: 25px;
+      right: 25px;
+      padding: 12px 30px;
+      background: #2196F3;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 1.1rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+  @media (max-width: 768px) {
+    .dashboard {
+      grid-template-columns: 1fr;
+      padding: 60px 10px 10px;
+    }
+    .result-box {
+      font-size: 0.9em;
+    }
+  }
+  </style>
+  <script>
+    function handleClick(url, panelType, label) {
+      const container = document.getElementById(panelType + '-result');
+      const timestamp = '<div class="timestamp">' + new Date().toLocaleString() + '</div>';
+      const loadingMsg = '<div class="loading">⏳ 请求中...</div>';
+      container.innerHTML += timestamp + loadingMsg;
+      fetch(url)
+       .then(response => {
+          if (!response.ok) throw new Error('HTTP'+ response.status);
+          return response.text();
+        })
+       .then(data => {
+          try {
+            const jsonData = JSON.parse(data);
+            if (jsonData.status === "success" && jsonData.processes) {
+              let formattedData = label + '进程查询成功\\n';
+              const user = jsonData.processes[0].USER;
+              formattedData += "[用户：" + user + "]\\n";
+              jsonData.processes.forEach(process => {
+                const { PID, STARTED, TIME, COMMAND } = process;
+                formattedData += JSON.stringify({ "PID": PID, "STARTED": STARTED, "TIME": TIME, "进程名": COMMAND }) + ",\\n";
+              });
+              formattedData = formattedData.slice(0, -2);
+              container.lastElementChild.innerHTML = '<pre style="white-space: pre-wrap;">' + formattedData + '</pre>';
+            } else {
+              container.lastElementChild.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
+            }
+          } catch (parseError) {
+            container.lastElementChild.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
           }
-          body {
-            margin: 0;
-            min-height: 100vh;
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            background: url('${img}') center/cover fixed;
-            background-size: cover;
-            background-position: center;
-          }
-        .dashboard {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 30px;
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 80px 20px 20px;
-          }
-        .panel {
-            background: rgba(255,255,255,var(--glass-opacity));
-            border-radius: 8px;
-            padding: 20px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.1);
-            width: 100%;
-            box-sizing: border-box;
-          }
-        .panel-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-          }
-        .panel-title {
-            margin: 0;
-            font-size: 1.5rem;
-            color: #2c3e50;
-          }
-        .btn-group {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            gap: 10px;
-            margin-bottom: 20px;
-          }
-        .api-btn {
-            padding: 12px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.2s;
-            font-size: 0.9rem;
-            text-align: center;
-            color: white;
-          }
-        .process-btn {
-            background: var(--process-color);
-          }
-        .service-btn {
-            background: var(--service-color);
-          }
-        .api-btn:hover {
-            opacity: 0.9;
-            transform: translateY(-1px);
-          }
-        .start-all-btn {
-            padding: 8px 16px;
-            background: #2196F3;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.9rem;
-          }
-        .result-box {
-            padding: 15px;
-            background: rgba(255,255,255,0.9);
-            border-radius: 6px;
-            min-height: 200px;
-            font-family: monospace;
-            white-space: pre-wrap;
-            overflow-wrap: break-word;
-            word-break: break-all;
-            overflow-y: auto;
-            max-height: 400px;
-            width: 100%;
-            box-sizing: border-box;
-          }
-        .timestamp {
-            color: #666;
-            font-size: 0.8rem;
-            margin-bottom: 5px;
-          }
-        .edit-btn {
-            position: fixed;
-            top: 25px;
-            right: 25px;
-            padding: 12px 30px;
-            background: #2196F3;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            cursor: pointer;
-            font-size: 1.1rem;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-          }
-        @media (max-width: 768px) {
-          .dashboard {
-            grid-template-columns: 1fr;
-            padding: 60px 10px 10px;
-          }
-          .result-box {
-            font-size: 0.9em;
-          }
-        }
-      </style>
-      <script>
-        function handleClick(url, panelType, label) {
-          const container = document.getElementById(panelType + '-result');
-          const timestamp = '<div class="timestamp">' + new Date().toLocaleString() + '</div>';
-          const loadingMsg = '<div class="loading">⏳ 请求中...</div>';
-          container.innerHTML += timestamp + loadingMsg;
-          fetch(url)
-           .then(response => {
-              if (!response.ok) throw new Error('HTTP'+ response.status);
-              return response.text();
-            })
-           .then(data => {
-              try {
-                const jsonData = JSON.parse(data);
-                if (jsonData.status === "success" && jsonData.processes) {
-                  let formattedData = label + '进程查询成功\\n';
-                  const user = jsonData.processes[0].USER;
-                  formattedData += "[用户：" + user + "]\\n";
-                  jsonData.processes.forEach(process => {
-                    const { PID, STARTED, TIME, COMMAND } = process;
-                    formattedData += JSON.stringify({ "PID": PID, "STARTED": STARTED, "TIME": TIME, "进程名": COMMAND }) + ",\\n";
-                  });
-                  formattedData = formattedData.slice(0, -2);
-                  container.lastElementChild.innerHTML = '<pre style="white-space: pre-wrap;">' + formattedData + '</pre>';
-                } else {
-                  container.lastElementChild.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
-                }
-              } catch (parseError) {
-                container.lastElementChild.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
-              }
-            })
-           .catch(error => {
-              const errorMsg = '<div class="error">❌ 请求失败:'+ error.message + '</div>';
-              container.lastElementChild.innerHTML = errorMsg;
-            });
-        }
-        async function startAllServices() {
-          const buttons = document.querySelectorAll('.service-btn');
-          for (const btn of buttons) {
-            btn.click();
-            await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 500));  //启动全部按钮延迟设定
-          }
-        }
-        async function viewAllProcesses() {
-          const buttons = document.querySelectorAll('.process-btn');
-          for (const btn of buttons) {
-            btn.click();
-            await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 500));  //查看所有按钮延迟设定
-          }
-        }
-      </script>
-    </head>
-    <body>
-      <button class="edit-btn" onclick="location.href='/${token}/edit'">⚙️ 配置管理</button>
-      <div class="dashboard">
-        <div class="panel">
-          <div class="panel-header">
-            <h2 class="panel-title">查询进程</h2>
-            <button class="start-all-btn" onclick="viewAllProcesses()">查询所有</button>
-          </div>
-          <div class="btn-group">
-            ${generateButtons(list, 'process')}
-          </div>
-          <div class="result-box" id="process-result"></div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <h2 class="panel-title">服务管理</h2>
-            <button class="start-all-btn" onclick="startAllServices()">启动全部</button>
-          </div>
-          <div class="btn-group">
-            ${generateButtons(info,'service')}
-          </div>
-          <div class="result-box" id="service-result"></div>
-        </div>
+        })
+       .catch(error => {
+          const errorMsg = '<div class="error">❌ 请求失败:'+ error.message + '</div>';
+          container.lastElementChild.innerHTML = errorMsg;
+        });
+    }
+    async function startAllServices() {
+      const buttons = document.querySelectorAll('.service-btn');
+      for (const btn of buttons) {
+        btn.click();
+        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 500));  //启动全部按钮延迟设定
+      }
+    }
+    async function viewAllProcesses() {
+      const buttons = document.querySelectorAll('.process-btn');
+      for (const btn of buttons) {
+        btn.click();
+        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 500));  //查看所有按钮延迟设定
+      }
+    }
+  </script>
+</head>
+<body>
+  <button class="edit-btn" onclick="location.href='/${token}/edit'">⚙️ 配置管理</button>
+  <div class="dashboard">
+    <div class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">查询进程</h2>
+        <button class="start-all-btn" onclick="viewAllProcesses()">查询所有</button>
       </div>
-    </body>
-    </html>
-  `;
-              return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
-          }
+      <div class="btn-group">
+        ${generateButtons(finalList, 'process')}
+      </div>
+      <div class="result-box" id="process-result"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">服务管理</h2>
+        <button class="start-all-btn" onclick="startAllServices()">启动全部</button>
+      </div>
+      <div class="btn-group">
+        ${generateButtons(finalInfo,'service')}
+      </div>
+      <div class="result-box" id="service-result"></div>
+    </div>
+  </div>
+</body>
+</html>
+`;
+        return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+      }
         // 配置管理页面的逻辑
         if (path.length === 2 && path[0] === token && path[1] === "edit") {
             const [list, info] = await Promise.all([
