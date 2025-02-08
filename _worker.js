@@ -8,7 +8,14 @@ export default {
     const INFOKV = env.INFOKV;  // 配置存储 KV 命名空间 - 执行命令地址
     const name = env.NAME || "serv00进程管理";  //设置站点标题
     const img = env.IMG || "";  //背景图片地址 
-
+    //添加协议转换
+    const normalizeURL = (inputUrl) => {
+      if (!inputUrl.includes("://")) {
+        return "https://" + inputUrl.trim();
+      }
+      return inputUrl.replace(/^http:\/\//, "https://");
+    };
+    
     // 统一处理 KV 写入重试，确保数据持久化
     const putWithRetry = async (namespace, key, value) => {
       const MAX_ATTEMPTS = 3;
@@ -91,20 +98,20 @@ export default {
         let finalInfo = info === "" ? "请配置地址" : info;
 
         // 生成按钮的 HTML 代码
-        const generateButtons = (data, panelType) => {
-          return data.split(/[, \n]+/)  // 根据逗号或换行符分割配置项
-            .filter(entry => entry.trim())
-            .map(entry => {
-              const [link, label] = entry.split("#");  // 分割链接和标签
-              return `
-            <button class="api-btn ${panelType}-btn" 
-              onclick="handleClick('${link.trim()}', '${panelType}', '${(label || link).trim()}')"
-              title="${link.trim()}">
-              ${(label || link).trim()}
-            </button>
-          `;
-            }).join("");
-        };
+      const generateButtons = (data, panelType) => {
+        return data.split(/[\n, ]+/)
+         .filter(entry => entry.trim())
+         .map(entry => {
+           let [link, label] = entry.split("#");
+           link = normalizeURL(link.trim());
+           return `
+           <button class="api-btn ${panelType}-btn" 
+            onclick="handleClick('${link}', '${panelType}', '${(label || link).trim()}')"
+            title="${link}">
+            ${(label || link).trim()}
+          </button>`;
+        }).join("");
+    };
 
         // 生成完整的 HTML 看板
         const html = `
