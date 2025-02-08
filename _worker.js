@@ -91,21 +91,31 @@ export default {
         let finalInfo = info === "" ? "请配置地址" : info;
 
         // 生成按钮的 HTML 代码
-        const generateButtons = (data, panelType) => {
-          return data.split(/[, \n]+/)  // 根据逗号或换行符分割配置项
-            .filter(entry => entry.trim())
-            .map(entry => {
-              const [link, label] = entry.split("#");  // 分割链接和标签
-              return `
-            <button class="api-btn ${panelType}-btn" 
-              onclick="handleClick('${link.trim()}', '${panelType}', '${(label || link).trim()}')"
-              title="${link.trim()}">
-              ${(label || link).trim()}
-            </button>
-          `;
-            }).join("");
-        };
+     const generateButtons = (data, panelType) => {
+       return data.split(/[, \n]+/)
+         .filter(entry => entry.trim())
+         .map(entry => {
+          const parts = entry.split('#');
+          const linkPart = parts[0].trim();
+          const labelPart = parts.slice(1).join('#').trim();
+          let link = linkPart;
+          
+          // 自动补全协议并转义特殊字符
+          if (!/^https?:\/\//i.test(link)) {
+            link = 'http://' + link;
+          }
+          const safeLink = link.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+          const displayLabel = labelPart || link;
+          const safeLabel = displayLabel.replace(/'/g, "\\'");
 
+          return `
+        <button class="api-btn ${panelType}-btn" 
+          onclick="handleClick('${safeLink}', '${panelType}', '${safeLabel}')"
+          title="${safeLink}">
+          ${displayLabel}
+        </button>`;
+        }).join("");
+    };
         // 生成完整的 HTML 看板
         const html = `
 <!DOCTYPE html>
