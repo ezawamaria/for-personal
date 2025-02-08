@@ -1,103 +1,115 @@
 export default {
   async fetch(request, env) {
-      // 解析请求的 URL 和路径
-      const url = new URL(request.url);
-      const path = url.pathname.split("/").filter(Boolean);
-      const token = env.TOKEN || "token";  // 获取 TOKEN（用于限制路径）
-      const LISTKV = env.LISTKV;  // 配置存储 KV 命名空间 - 进程查看地址
-      const INFOKV = env.INFOKV;  // 配置存储 KV 命名空间 - 执行命令地址
-      const name = env.NAME || "serv00进程管理";  //设置站点标题
-      const img = env.IMG || "";  //背景图片地址 
+    // 解析请求的 URL 和路径
+    const url = new URL(request.url);
+    const path = url.pathname.split("/").filter(Boolean);
+    const token = env.TOKEN || "token";  // 获取 TOKEN（用于限制路径）
+    const LISTKV = env.LISTKV;  // 配置存储 KV 命名空间 - 进程查看地址
+    const INFOKV = env.INFOKV;  // 配置存储 KV 命名空间 - 执行命令地址
+    const name = env.NAME || "serv00进程管理";  //设置站点标题
+    const img = env.IMG || "";  //背景图片地址 
 
-      // 统一处理 KV 写入重试，确保数据持久化
-      const putWithRetry = async (namespace, key, value) => {
-          const MAX_ATTEMPTS = 3;
-          for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-              try {
-                  await namespace.put(key, value);  // 写入数据到 KV
-                  const saved = await namespace.get(key);  // 校验写入是否成功
-                  if (saved === value) return true;
-                  if (attempt === MAX_ATTEMPTS) throw new Error("KV验证失败");
-              } catch (error) {
-                  // 写入失败时进行重试
-                  if (attempt === MAX_ATTEMPTS) throw error;
-                  await new Promise(r => setTimeout(r, 200 * attempt)); // 延迟重试
-              }
-          }
-      };
-
-      // 编辑配置页面，处理 POST 请求
-      if (path.length === 2 && path[0] === token && path[1] === "edit" && request.method === "POST") {
-          try {
-              const rawContent = await request.text();  // 获取 POST 请求的文本内容
-              const separatorIndex = rawContent.indexOf('###');  // 配置块的分隔符，不要在list结尾填写###，填入反而会出错
-
-              // 确保配置内容有效且包含分隔符
-              if (separatorIndex <= 0 || separatorIndex >= rawContent.length - 1) {
-                  throw new Error("配置内容不可为空，可任意填写");
-              }
-
-              // 提取两个配置块
-              const newList = rawContent.substring(0, separatorIndex).trim();
-              const newInfo = rawContent.substring(separatorIndex + 3).trim();
-
-              // 将新配置存入 KV，并返回响应
-              await Promise.all([
-                  putWithRetry(LISTKV, "listadd", newList),
-                  putWithRetry(INFOKV, "infoadd", newInfo)
-              ]);
-
-              return new Response(JSON.stringify({
-                  status: "success",
-                  message: `保存成功（${newList.length + newInfo.length}字节）`
-              }), {
-                  headers: { "Content-Type": "application/json" }
-              });
-
-          } catch (error) {
-              // 错误处理，记录错误并返回错误信息
-              console.error(`保存失败: ${error.stack}`);
-              return new Response(JSON.stringify({
-                  status: "error",
-                  message: error.message.replace(/[\r\n]/g, " "),
-                  code: "KV_WRITE_FAIL"
-              }), { status: 500 });
-          }
+    // 统一处理 KV 写入重试，确保数据持久化
+    const putWithRetry = async (namespace, key, value) => {
+      const MAX_ATTEMPTS = 3;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          await namespace.put(key, value);  // 写入数据到 KV
+          const saved = await namespace.get(key);  // 校验写入是否成功
+          if (saved === value) return true;
+          if (attempt === MAX_ATTEMPTS) throw new Error("KV验证失败");
+        } catch (error) {
+          // 写入失败时进行重试
+          if (attempt === MAX_ATTEMPTS) throw error;
+          await new Promise(r => setTimeout(r, 200 * attempt)); // 延迟重试
+        }
       }
+    };
 
-      // 校验 KV 是否正确绑定
-      const validateKV = (kv) => {
-          if (!kv || typeof kv.put !== "function")
-              throw new Error("KV 命名空间未正确绑定");
-      };
-
+    // 编辑配置页面，处理 POST 请求
+    if (path.length === 2 && path[0] === token && path[1] === "edit" && request.method === "POST") {
       try {
-          // 校验命名空间是否存在
-          validateKV(LISTKV);
-          validateKV(INFOKV);
+        const rawContent = await request.text();  // 获取 POST 请求的文本内容
+        const separatorIndex = rawContent.indexOf('###');  // 配置块的分隔符，不要在list结尾填写###，填入反而会出错
 
-          // 获取并返回看板内容
-          if (path.length === 1 && path[0] === token) {
-              const [list, info] = await Promise.all([
-                  LISTKV.get("listadd") || "",
-                  INFOKV.get("infoadd") || ""
-              ]);
+        // 确保配置内容有效且包含分隔符
+        if (separatorIndex <= 0 || separatorIndex >= rawContent.length - 1) {
+          throw new Error("必须包含两个有效配置块，用 ### 分隔");
+        }
 
-              // 生成按钮的 HTML 代码
-              const generateButtons = (data, panelType) => {
-                  return data.split(/[, \n]+/)  // 根据逗号或换行符分割配置项
-                     .filter(entry => entry.trim())
-                     .map(entry => {
-                          const [link, label] = entry.split("#");  // 分割链接和标签
-                          return `
+        // 提取两个配置块
+        let newList = rawContent.substring(0, separatorIndex).trim();
+        let newInfo = rawContent.substring(separatorIndex + 3).trim();
+
+        // 当填入的list和info为空时，自动填入“请配置地址”
+        if (newList === "") {
+          newList = "请配置地址";
+        }
+        if (newInfo === "") {
+          newInfo = "请配置地址";
+        }
+
+        // 将新配置存入 KV，并返回响应
+        await Promise.all([
+          putWithRetry(LISTKV, "listadd", newList),
+          putWithRetry(INFOKV, "infoadd", newInfo)
+        ]);
+
+        return new Response(JSON.stringify({
+          status: "success",
+          message: `保存成功（${newList.length + newInfo.length}字节）`
+        }), {
+          headers: { "Content-Type": "application/json" }
+        });
+
+      } catch (error) {
+        // 错误处理，记录错误并返回错误信息
+        console.error(`保存失败: ${error.stack}`);
+        return new Response(JSON.stringify({
+          status: "error",
+          message: error.message.replace(/[\r\n]/g, " "),
+          code: "KV_WRITE_FAIL"
+        }), { status: 500 });
+      }
+    }
+
+    // 校验 KV 是否正确绑定
+    const validateKV = (kv) => {
+      if (!kv || typeof kv.put !== "function")
+        throw new Error("KV 命名空间未正确绑定");
+    };
+
+    try {
+      // 校验命名空间是否存在
+      validateKV(LISTKV);
+      validateKV(INFOKV);
+
+      // 获取并返回看板内容
+      if (path.length === 1 && path[0] === token) {
+        const [list, info] = await Promise.all([
+          LISTKV.get("listadd") || "",
+          INFOKV.get("infoadd") || ""
+        ]);
+
+        // 当获取的list和info为空时，自动填入“请配置地址”
+        let finalList = list === "" ? "请配置地址" : list;
+        let finalInfo = info === "" ? "请配置地址" : info;
+
+        // 生成按钮的 HTML 代码
+        const generateButtons = (data, panelType) => {
+          return data.split(/[, \n]+/)  // 根据逗号或换行符分割配置项
+            .filter(entry => entry.trim())
+            .map(entry => {
+              const [link, label] = entry.split("#");  // 分割链接和标签
+              return `
             <button class="api-btn ${panelType}-btn" 
               onclick="handleClick('${link.trim()}', '${panelType}', '${(label || link).trim()}')"
               title="${link.trim()}">
               ${(label || link).trim()}
             </button>
           `;
-                      }).join("");
-              };
+            }).join("");
+        };
 
               // 生成完整的 HTML 看板
               const html = `
