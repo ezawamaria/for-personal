@@ -102,8 +102,8 @@ export default {
           
           // 自动补全协议并转义特殊字符
           if (!/^https?:\/\//i.test(link)) {
-            link = 'http://' + link;
-          }
+            link = 'https://' + link;
+          }s
           const safeLink = link.replace(/'/g, "\\'").replace(/"/g, '&quot;');
           const displayLabel = labelPart || link;
           const safeLabel = displayLabel.replace(/'/g, "\\'");
