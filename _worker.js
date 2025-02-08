@@ -92,10 +92,10 @@ export default {
 
         // 生成按钮的 HTML 代码
         const generateButtons = (data, panelType) => {
-          return data.split(/[, \n]+/)  
-          .filter(entry => entry.trim())
-          .map(entry => {
-              const [link, label] = entry.split("#");  
+          return data.split(/[, \n]+/)  // 根据逗号或换行符分割配置项
+            .filter(entry => entry.trim())
+            .map(entry => {
+              const [link, label] = entry.split("#");  // 分割链接和标签
               return `
             <button class="api-btn ${panelType}-btn" 
               onclick="handleClick('${link.trim()}', '${panelType}', '${(label || link).trim()}')"
@@ -105,13 +105,14 @@ export default {
           `;
             }).join("");
         };
+
         // 生成完整的 HTML 看板
         const html = `
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="0=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${name}</title>
   <style>
     :root {
@@ -127,7 +128,7 @@ export default {
       background-size: cover;
       background-position: center;
     }
- .dashboard {
+  .dashboard {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 30px;
@@ -135,7 +136,7 @@ export default {
       margin: 0 auto;
       padding: 80px 20px 20px;
     }
- .panel {
+  .panel {
       background: rgba(255,255,255,var(--glass-opacity));
       border-radius: 8px;
       padding: 20px;
@@ -143,24 +144,24 @@ export default {
       width: 100%;
       box-sizing: border-box;
     }
- .panel-header {
+  .panel-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       margin-bottom: 20px;
     }
- .panel-title {
+  .panel-title {
       margin: 0;
       font-size: 1.5rem;
       color: #2c3e50;
     }
- .btn-group {
+  .btn-group {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
       gap: 10px;
       margin-bottom: 20px;
     }
- .api-btn {
+  .api-btn {
       padding: 12px;
       border: none;
       border-radius: 6px;
@@ -170,17 +171,17 @@ export default {
       text-align: center;
       color: white;
     }
- .process-btn {
+  .process-btn {
       background: var(--process-color);
     }
- .service-btn {
+  .service-btn {
       background: var(--service-color);
     }
- .api-btn:hover {
+  .api-btn:hover {
       opacity: 0.9;
       transform: translateY(-1px);
     }
- .start-all-btn {
+  .start-all-btn {
       padding: 8px 16px;
       background: #2196F3;
       color: white;
@@ -189,7 +190,7 @@ export default {
       cursor: pointer;
       font-size: 0.9rem;
     }
- .result-box {
+  .result-box {
       padding: 15px;
       background: rgba(255,255,255,0.9);
       border-radius: 6px;
@@ -203,12 +204,12 @@ export default {
       width: 100%;
       box-sizing: border-box;
     }
- .timestamp {
-      color: 666;
+  .timestamp {
+      color: #666;
       font-size: 0.8rem;
       margin-bottom: 5px;
     }
- .edit-btn {
+  .edit-btn {
       position: fixed;
       top: 25px;
       right: 25px;
@@ -222,11 +223,11 @@ export default {
       box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     }
   @media (max-width: 768px) {
-   .dashboard {
+    .dashboard {
       grid-template-columns: 1fr;
       padding: 60px 10px 10px;
     }
-   .result-box {
+    .result-box {
       font-size: 0.9em;
     }
   }
@@ -237,17 +238,12 @@ export default {
       const timestamp = '<div class="timestamp">' + new Date().toLocaleString() + '</div>';
       const loadingMsg = '<div class="loading">⏳ 请求中...</div>';
       container.innerHTML += timestamp + loadingMsg;
-      const fullUrl = new URL(url);
-      // 判断协议是否为相对路径或不支持的协议，如果是则添加 http 协议前缀
-      if (!fullUrl.protocol || fullUrl.protocol === 'file:') {
-        fullUrl.protocol = 'http:';
-      }
-      fetch(fullUrl.href)
-      .then(response => {
+      fetch(url)
+       .then(response => {
           if (!response.ok) throw new Error('HTTP'+ response.status);
           return response.text();
         })
-      .then(data => {
+       .then(data => {
           try {
             const jsonData = JSON.parse(data);
             if (jsonData.status === "success" && jsonData.processes) {
@@ -267,7 +263,7 @@ export default {
             container.lastElementChild.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
           }
         })
-      .catch(error => {
+       .catch(error => {
           const errorMsg = '<div class="error">❌ 请求失败:'+ error.message + '</div>';
           container.lastElementChild.innerHTML = errorMsg;
         });
@@ -276,14 +272,14 @@ export default {
       const buttons = document.querySelectorAll('.service-btn');
       for (const btn of buttons) {
         btn.click();
-        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 500));  
+        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 500));  //启动全部按钮延迟设定
       }
     }
     async function viewAllProcesses() {
       const buttons = document.querySelectorAll('.process-btn');
       for (const btn of buttons) {
         btn.click();
-        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 500));  
+        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 500));  //查看所有按钮延迟设定
       }
     }
   </script>
@@ -297,16 +293,18 @@ export default {
         <button class="start-all-btn" onclick="viewAllProcesses()">查询所有</button>
       </div>
       <div class="btn-group">
-        ${generateButtons(list, 'process')}
+        ${generateButtons(finalList, 'process')}
       </div>
       <div class="result-box" id="process-result"></div>
     </div>
+
     <div class="panel">
       <div class="panel-header">
-        <h2 class="panel-title">服务管理</h><button class="start-all-btn" onclick="startAllServices()">启动全部</button>
+        <h2 class="panel-title">服务管理</h2>
+        <button class="start-all-btn" onclick="startAllServices()">启动全部</button>
       </div>
       <div class="btn-group">
-        ${generateButtons(info,'service')}
+        ${generateButtons(finalInfo,'service')}
       </div>
       <div class="result-box" id="service-result"></div>
     </div>
