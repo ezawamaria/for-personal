@@ -34,7 +34,7 @@ export default {
 
               // 确保配置内容有效且包含分隔符
               if (separatorIndex <= 0 || separatorIndex >= rawContent.length - 1) {
-                  throw new Error("必须包含两个有效配置块，用 ### 分隔");
+                  throw new Error("配置内容不可为空，可任意填写");
               }
 
               // 提取两个配置块
