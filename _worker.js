@@ -13,7 +13,7 @@ export default {
       if (!inputUrl.includes("://")) {
         return "https://" + inputUrl.trim();
       }
-      return inputUrl.replace(/^http:\/\//, "https://");
+      return inputUrl.trim();
     };
     
     // 统一处理 KV 写入重试，确保数据持久化
