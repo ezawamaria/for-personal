@@ -8,14 +8,15 @@ export default {
     const INFOKV = env.INFOKV;  // 配置存储 KV 命名空间 - 执行命令地址
     const name = env.NAME || "serv00进程管理";  //设置站点标题
     const img = env.IMG || "";  //背景图片地址 
-    //添加协议转换
+    
+    // 仅为没有协议头的地址添加 https:// 协议
     const normalizeURL = (inputUrl) => {
       if (!inputUrl.includes("://")) {
-        return "https://" + inputUrl.trim();
+        return "https://" + inputUrl.trim();  // 自动加上 https://
       }
-      return inputUrl.trim();
+      return inputUrl.trim();  // 保留 http:// 或 https:// 协议
     };
-    
+
     // 统一处理 KV 写入重试，确保数据持久化
     const putWithRetry = async (namespace, key, value) => {
       const MAX_ATTEMPTS = 3;
@@ -98,20 +99,20 @@ export default {
         let finalInfo = info === "" ? "请配置地址" : info;
 
         // 生成按钮的 HTML 代码
-      const generateButtons = (data, panelType) => {
-        return data.split(/[\n, ]+/)
-         .filter(entry => entry.trim())
-         .map(entry => {
-           let [link, label] = entry.split("#");
-           link = normalizeURL(link.trim());
-           return `
-           <button class="api-btn ${panelType}-btn" 
-            onclick="handleClick('${link}', '${panelType}', '${(label || link).trim()}')"
-            title="${link}">
-            ${(label || link).trim()}
-          </button>`;
-        }).join("");
-    };
+        const generateButtons = (data, panelType) => {
+          return data.split(/[\n, ]+/)
+            .filter(entry => entry.trim())
+            .map(entry => {
+              let [link, label] = entry.split("#");
+              link = normalizeURL(link.trim());  // 正常化URL
+              return `
+                <button class="api-btn ${panelType}-btn" 
+                  onclick="handleClick('${link}', '${panelType}', '${(label || link).trim()}')"
+                  title="${link}">
+                  ${(label || link).trim()}
+                </button>`;
+            }).join("");
+        };
 
         // 生成完整的 HTML 看板
         const html = `
@@ -319,6 +320,8 @@ export default {
 </body>
 </html>
 `;
+
+
         return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
       }
         // 配置管理页面的逻辑
