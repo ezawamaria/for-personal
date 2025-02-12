@@ -15,7 +15,6 @@ export default {
       }
       return inputUrl.replace(/^http:\/\//, "https://");
     };
-    
     // 统一处理 KV 写入重试，确保数据持久化
     const putWithRetry = async (namespace, key, value) => {
       const MAX_ATTEMPTS = 3;
@@ -32,17 +31,14 @@ export default {
         }
       }
     };
-
     // 编辑配置页面，处理 POST 请求
     if (path.length === 2 && path[0] === token && path[1] === "edit" && request.method === "POST") {
       try {
         const rawContent = await request.text();  // 获取 POST 请求的文本内容
         const separatorIndex = rawContent.indexOf('###');  // 配置块的分隔符，不要在list结尾填写###，填入反而会出错
-
         // 提取两个配置块
         let newList = rawContent.substring(0, separatorIndex).trim();
         let newInfo = rawContent.substring(separatorIndex + 3).trim();
-
         // 当填入的list和info为空时，自动填入“请配置地址”
         if (newList === "") {
           newList = "请配置地址";
@@ -50,20 +46,17 @@ export default {
         if (newInfo === "") {
           newInfo = "请配置地址";
         }
-
         // 将新配置存入 KV，并返回响应
         await Promise.all([
           putWithRetry(LISTKV, "listadd", newList),
           putWithRetry(INFOKV, "infoadd", newInfo)
         ]);
-
         return new Response(JSON.stringify({
           status: "success",
           message: `保存成功（${newList.length + newInfo.length}字节）`
         }), {
           headers: { "Content-Type": "application/json" }
         });
-
       } catch (error) {
         // 错误处理，记录错误并返回错误信息
         console.error(`保存失败: ${error.stack}`);
@@ -74,45 +67,39 @@ export default {
         }), { status: 500 });
       }
     }
-
     // 校验 KV 是否正确绑定
     const validateKV = (kv) => {
       if (!kv || typeof kv.put !== "function")
         throw new Error("KV 命名空间未正确绑定");
     };
-
     try {
       // 校验命名空间是否存在
       validateKV(LISTKV);
       validateKV(INFOKV);
-
       // 获取并返回看板内容
       if (path.length === 1 && path[0] === token) {
         const [list, info] = await Promise.all([
           LISTKV.get("listadd") || "",
           INFOKV.get("infoadd") || ""
         ]);
-
         // 当获取的list和info为空时，自动填入“请配置地址”
         let finalList = list === "" ? "请配置地址" : list;
         let finalInfo = info === "" ? "请配置地址" : info;
-
         // 生成按钮的 HTML 代码
-      const generateButtons = (data, panelType) => {
-        return data.split(/[\n, ]+/)
-         .filter(entry => entry.trim())
-         .map(entry => {
-           let [link, label] = entry.split("#");
-           link = normalizeURL(link.trim());
-           return `
+        const generateButtons = (data, panelType) => {
+          return data.split(/[\n, ]+/)
+            .filter(entry => entry.trim())
+            .map(entry => {
+              let [link, label] = entry.split("#");
+              link = normalizeURL(link.trim());
+              return `
            <button class="api-btn ${panelType}-btn" 
             onclick="handleClick('${link}', '${panelType}', '${(label || link).trim()}')"
             title="${link}">
             ${(label || link).trim()}
           </button>`;
-        }).join("");
-    };
-
+            }).join("");
+        };
         // 生成完整的 HTML 看板
         const html = `
 <!DOCTYPE html>
@@ -243,14 +230,17 @@ export default {
     function handleClick(url, panelType, label) {
       const container = document.getElementById(panelType + '-result');
       const timestamp = '<div class="timestamp">' + new Date().toLocaleString() + '</div>';
-      const loadingMsg = '<div class="loading">⏳ 请求中...</div>';
-      container.innerHTML += timestamp + loadingMsg;
+      const loadingMsg = '<div class="loading" id="' + url + '">⏳ 请求中...</div>';
+      const loadingDiv = document.createElement('div');
+      loadingDiv.innerHTML = timestamp + loadingMsg;
+      const loadingElement = loadingDiv.querySelector('.loading');
+      container.appendChild(loadingDiv);
       fetch(url)
-       .then(response => {
+        .then(response => {
           if (!response.ok) throw new Error('HTTP'+ response.status);
           return response.text();
         })
-       .then(data => {
+        .then(data => {
           try {
             const jsonData = JSON.parse(data);
             if (jsonData.status === "success" && jsonData.processes) {
@@ -262,31 +252,39 @@ export default {
                 formattedData += JSON.stringify({ "PID": PID, "STARTED": STARTED, "TIME": TIME, "进程名": COMMAND }) + ",\\n";
               });
               formattedData = formattedData.slice(0, -2);
-              container.lastElementChild.innerHTML = '<pre style="white-space: pre-wrap;">' + formattedData + '</pre>';
+              loadingElement.innerHTML = '<pre style="white-space: pre-wrap;">' + formattedData + '</pre>';
             } else {
-              container.lastElementChild.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
+              loadingElement.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
+              if (panelType === 'process') {
+                const infoButtons = document.querySelectorAll('.service-btn');
+                infoButtons.forEach(btn => {
+                  if (btn.title === url.replace('list', 'info')) {
+                    btn.click();
+                  }
+                });
+              }
             }
           } catch (parseError) {
-            container.lastElementChild.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
+            loadingElement.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
           }
         })
-       .catch(error => {
+        .catch(error => {
           const errorMsg = '<div class="error">❌ 请求失败:'+ error.message + '</div>';
-          container.lastElementChild.innerHTML = errorMsg;
+          loadingElement.innerHTML = errorMsg;
         });
     }
     async function startAllServices() {
       const buttons = document.querySelectorAll('.service-btn');
       for (const btn of buttons) {
         btn.click();
-        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 500));  //启动全部按钮延迟设定
+        await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 200));  //启动全部按钮延迟设定
       }
     }
     async function viewAllProcesses() {
       const buttons = document.querySelectorAll('.process-btn');
       for (const btn of buttons) {
         btn.click();
-        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 500));  //查看所有按钮延迟设定
+        await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 200));  //查看所有按钮延迟设定
       }
     }
   </script>
@@ -304,7 +302,6 @@ export default {
       </div>
       <div class="result-box" id="process-result"></div>
     </div>
-
     <div class="panel">
       <div class="panel-header">
         <h2 class="panel-title">服务管理</h2>
