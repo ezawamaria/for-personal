@@ -31,20 +31,17 @@ app.get("/info", function (req, res) {
 app.get("/list", function (req, res) {
     exec('ps aux | grep -vE "grep|node|ps|php"', (error, stdout, stderr) => {
         if (error) return res.status(500).json({ status: "error" });
-
         const processes = stdout.toString()
-            .split('\n')
-            .slice(1)
-            .filter(line => line.trim())
-            .map(line => {
+           .split('\n')
+           .slice(1)
+           .filter(line => line.trim())
+           .map(line => {
                 const matches = line.match(
                     /^(\S+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)$/
                 );
                 if (!matches) return null;
-
                 const rawCommand = matches[11];
                 let commandName = rawCommand;
-
                 // 规则 1: sshd 进程保留完整信息
                 if (rawCommand.includes('sshd:')) {
                     commandName = rawCommand;
@@ -58,7 +55,6 @@ app.get("/list", function (req, res) {
                     const [mainProgramPath] = rawCommand.split(/\s+/);
                     const programSegments = mainProgramPath.split('/');
                     let appName = programSegments.pop() || '';
-
                     // 处理解释器执行脚本场景 (如 bash /path/script.sh)
                     if (['bash', 'sh', 'python', 'python3'].includes(appName)) {
                         const scriptPath = rawCommand.split(/\s+/)[1] || '';
@@ -66,11 +62,9 @@ app.get("/list", function (req, res) {
                         const scriptName = scriptSegments.pop() || '';
                         if (scriptName) appName = scriptName;
                     }
-
                     appName = appName.replace(/:.*/, ''); // 清理守护进程描述
                     commandName = appName;
                 }
-
                 return {
                     USER: matches[1],
                     PID: parseInt(matches[2]),
@@ -85,8 +79,10 @@ app.get("/list", function (req, res) {
                     COMMAND: commandName
                 };
             })
-            .filter(Boolean);
-
+           .filter(Boolean);
+        if (processes.length === 0) {
+            return res.type('text').send("无进程运行");
+        }
         // 返回美化格式的JSON
         res.type('json').send(JSON.stringify({ status: "success", processes }, null, 2));
     });
