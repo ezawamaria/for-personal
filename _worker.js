@@ -175,6 +175,15 @@ export default {
       opacity: 0.9;
       transform: translateY(-1px);
     }
+   .view-all-btn {
+      padding: 8px 16px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
   .start-all-btn {
       padding: 8px 16px;
       background: #2196F3;
@@ -295,7 +304,7 @@ export default {
     <div class="panel">
       <div class="panel-header">
         <h2 class="panel-title">查询进程</h2>
-        <button class="start-all-btn" onclick="viewAllProcesses()">查询所有</button>
+        <button class="view-all-btn" onclick="viewAllProcesses()">查询所有</button>
       </div>
       <div class="btn-group">
         ${generateButtons(finalList, 'process')}
