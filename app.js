@@ -80,8 +80,9 @@ app.get("/list", function (req, res) {
                 };
             })
            .filter(Boolean);
+  
         if (processes.length === 0) {
-            return res.type('text').send("无进程运行");
+            return res.json({ status: "error", message: "无进程运行"});
         }
         // 返回美化格式的JSON
         res.type('json').send(JSON.stringify({ status: "success", processes }, null, 2));
