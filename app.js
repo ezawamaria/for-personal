@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require("express");
 const { exec } = require('child_process');
 const app = express();
-
+//安装依赖 npm install dotenv basic-auth express cors
 app.use(express.json());
 
 // ====== CORS 跨域支持 ======
