@@ -1,488 +1,293 @@
 export default {
   async fetch(request, env) {
-    // 解析请求的 URL 和路径
     const url = new URL(request.url);
-    const path = url.pathname.split("/").filter(Boolean);
-    const token = env.TOKEN || "token";  // 获取 TOKEN（用于限制路径）
-    const LISTKV = env.LISTKV;  // 配置存储 KV 命名空间 - 进程查看地址
-    const INFOKV = env.INFOKV;  // 配置存储 KV 命名空间 - 执行命令地址
-    const name = env.NAME || "serv00进程管理";  //设置站点标题
-    const img = env.IMG || "";  //背景图片地址 
-    //添加协议转换
-    const normalizeURL = (inputUrl) => {
-      if (!inputUrl.includes("://")) {
-        return "https://" + inputUrl.trim();
-      }
-      return inputUrl.replace(/^http:\/\//, "https://");
-    };
-    // 统一处理 KV 写入重试，确保数据持久化
-    const putWithRetry = async (namespace, key, value) => {
-      const MAX_ATTEMPTS = 3;
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-          await namespace.put(key, value);  // 写入数据到 KV
-          const saved = await namespace.get(key);  // 校验写入是否成功
-          if (saved === value) return true;
-          if (attempt === MAX_ATTEMPTS) throw new Error("KV验证失败");
-        } catch (error) {
-          // 写入失败时进行重试
-          if (attempt === MAX_ATTEMPTS) throw error;
-          await new Promise(r => setTimeout(r, 200 * attempt)); // 延迟重试
-        }
-      }
-    };
-    // 编辑配置页面，处理 POST 请求
-    if (path.length === 2 && path[0] === token && path[1] === "edit" && request.method === "POST") {
+    const key = (env.KEY || "").trim();
+
+    if (!key) {
+      return new Response("Server misconfig: missing environment variable KEY", { status: 500 });
+    }
+
+    const pathname = url.pathname;
+
+    // 项目页面：仅当路径等于 /{KEY} 时返回页面
+    if ((pathname === `/${key}` || pathname === `/${key}/`) && request.method === "GET") {
+      return new Response(renderHTML(key), {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
+
+    // 转换接口： POST /{KEY}/convert
+    if (pathname === `/${key}/convert` && request.method === "POST") {
       try {
-        const rawContent = await request.text();  // 获取 POST 请求的文本内容
-        const separatorIndex = rawContent.indexOf('###');  // 配置块的分隔符，不要在list结尾填写###，填入反而会出错
-        // 提取两个配置块
-        let newList = rawContent.substring(0, separatorIndex).trim();
-        let newInfo = rawContent.substring(separatorIndex + 3).trim();
-        // 当填入的list和info为空时，自动填入“请配置地址”
-        if (newList === "") {
-          newList = "请配置地址";
-        }
-        if (newInfo === "") {
-          newInfo = "请配置地址";
-        }
-        // 将新配置存入 KV，并返回响应
-        await Promise.all([
-          putWithRetry(LISTKV, "listadd", newList),
-          putWithRetry(INFOKV, "infoadd", newInfo)
-        ]);
-        return new Response(JSON.stringify({
-          status: "success",
-          message: `保存成功（${newList.length + newInfo.length}字节）`
-        }), {
-          headers: { "Content-Type": "application/json" }
-        });
-      } catch (error) {
-        // 错误处理，记录错误并返回错误信息
-        console.error(`保存失败: ${error.stack}`);
-        return new Response(JSON.stringify({
-          status: "error",
-          message: error.message.replace(/[\r\n]/g, " "),
-          code: "KV_WRITE_FAIL"
-        }), { status: 500 });
+        const payload = await request.json().catch(() => ({}));
+        const source = (payload.source || "https://cfxr.eu.org/getSub").trim();
+        let subHost = (payload.subHost || "").trim();
+        const proxyIp = (payload.proxyIp || "").trim();
+        const proxyPort = (payload.proxyPort || "").trim();
+
+        if (!source) return jsonError("请填写『白嫖订阅』地址");
+        if (!subHost) return jsonError("请填写『订阅器』域名或主机名");
+        if (!proxyIp) return jsonError("请填写『反代ip』");
+        if (!proxyPort || !/^\d+$/.test(proxyPort)) return jsonError("『反代端口』应为数字");
+
+        // 去掉协议与尾部斜杠
+        subHost = subHost.replace(/^https?:\/\//i, "").replace(/\/+$/i, "");
+
+        // 拉取订阅（不缓存）
+        const resp = await fetch(source, { cf: { cacheTtl: 0 } });
+        if (!resp.ok) return jsonError(`拉取订阅失败：HTTP ${resp.status}`);
+        const text = await resp.text();
+
+        const converted = convertSubscription(text, subHost, proxyIp, proxyPort);
+        if (converted.length === 0) return jsonError("未从订阅内容中解析到 vless:// 链接");
+
+        return jsonOK({ result: converted.join("\n") });
+      } catch (err) {
+        return jsonError("转换出错：" + (err && err.message ? err.message : String(err)));
       }
     }
-    // 校验 KV 是否正确绑定
-    const validateKV = (kv) => {
-      if (!kv || typeof kv.put !== "function")
-        throw new Error("KV 命名空间未正确绑定");
-    };
-    try {
-      // 校验命名空间是否存在
-      validateKV(LISTKV);
-      validateKV(INFOKV);
-      // 获取并返回看板内容
-      if (path.length === 1 && path[0] === token) {
-        const [list, info] = await Promise.all([
-          LISTKV.get("listadd") || "",
-          INFOKV.get("infoadd") || ""
-        ]);
-        // 当获取的list和info为空时，自动填入“请配置地址”
-        let finalList = list === "" ? "请配置地址" : list;
-        let finalInfo = info === "" ? "请配置地址" : info;
-        // 生成按钮的 HTML 代码
-        const generateButtons = (data, panelType) => {
-          return data.split(/[\n, ]+/)
-            .filter(entry => entry.trim())
-            .map(entry => {
-              let [link, label] = entry.split("#");
-              link = normalizeURL(link.trim());
-              return `
-           <button class="api-btn ${panelType}-btn" 
-            onclick="handleClick('${link}', '${panelType}', '${(label || link).trim()}')"
-            title="${link}">
-            ${(label || link).trim()}
-          </button>`;
-            }).join("");
-        };
-        // 生成完整的 HTML 看板
-        const html = `
-<!DOCTYPE html>
+
+    // 其余一律 404
+    return new Response("404 Not Found", { status: 404 });
+  },
+};
+
+/* ---------- 帮助函数 ---------- */
+
+function jsonOK(obj) {
+  return new Response(JSON.stringify(Object.assign({ ok: true }, obj)), {
+    status: 200,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+function jsonError(msg) {
+  return new Response(JSON.stringify({ ok: false, error: String(msg) }), {
+    status: 400,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+/**
+ * 将订阅文本中的每条 vless:// 链接转换为目标格式
+ * 返回数组（每项一条最终 URL）
+ */
+function convertSubscription(text, subHost, proxyIp, proxyPort) {
+  const lines = String(text || "").split(/\r?\n/);
+  const results = [];
+
+  for (let raw of lines) {
+    if (!raw) continue;
+    const line = raw.trim();
+
+    // 只取以 vless:// 开头或包含 vless:// 的第一段（并去掉后面的注释 like " by:xxx"）
+    if (!/vless:\/\//i.test(line)) continue;
+    const piece = line.split(/\s+/)[0]; // 去掉 by: 之类的尾巴
+    const clean = piece.split("#")[0]; // 去掉 fragment
+
+    const converted = convertOneVless(clean, subHost, proxyIp, proxyPort);
+    if (converted) results.push(converted);
+  }
+  return results;
+}
+
+/**
+ * 单条 vless:// 链接转换
+ * 输出格式：
+ *   https://{subHost}/sub?uuid={UUID}&{原查询串（path 已替换并 encodeURIComponent）}
+ */
+function convertOneVless(vlessUrl, subHost, proxyIp, proxyPort) {
+  // 基本解析： vless://{UUID}@{host}:{port}?{query}
+  const re = /^vless:\/\/([^@]+)@([^?]+)(?:\?([^#]*))?/i;
+  const m = vlessUrl.match(re);
+  if (!m) return null;
+
+  const uuid = m[1];
+  let qs = m[3] || ""; // 可能为空
+  // 移除 fragment（已经通过 regex 捕获避免，但保险起见）
+  qs = qs.split("#")[0];
+
+  // 替换 path 参数内的 proxyip 和 port(...)（只替换 path 值部分）
+  const newQs = replacePathInQuery(qs, proxyIp, proxyPort);
+
+  // 拼接最终 URL：注意使用 & 连接 uuid 与原查询串
+  const tail = newQs ? "&" + newQs : "";
+  return `https://${subHost}/sub?uuid=${encodeURIComponent(uuid)}${tail}`;
+}
+
+/**
+ * 在查询字符串中只替换 path= 的值，其他键值对保持原样并保留原有编码方式。
+ * replacer 接受已 decode 的 path 值，返回要重新 encodeURIComponent 后填回的字符串值。
+ */
+function replacePathInQuery(qs, proxyIp, proxyPort) {
+  if (!qs) return "";
+
+  // 只替换第一个 path= 的值（如有多个 path 参数通常不常见）
+  // 捕获分组： (前缀或开头) (& 或 开头) path= (value)
+  const re = /(^|&)path=([^&]*)/i;
+  const match = qs.match(re);
+  if (!match) return qs;
+
+  const prefix = match[1]; // "" 或 "&"
+  const encodedVal = match[2] || "";
+
+  let decoded;
+  try {
+    decoded = decodeURIComponent(encodedVal);
+  } catch {
+    // 若解码失败，则用原始字符串（尽力处理）
+    decoded = encodedVal;
+  }
+
+  // 执行替换：proxyip -> proxyIp； port(数字) -> proxyPort)
+    decoded = decoded.replace(/proxyip/gi, proxyIp);
+    decoded = decoded.replace(/port\(\d+\)/gi, proxyPort);
+
+  const newEncoded = encodeURIComponent(decoded);
+
+  // 用替换后的 path 值替换原 qs 中的对应片段（仅第一次出现）
+  return qs.replace(re, `${prefix}path=${newEncoded}`);
+}
+
+/* ---------- 前端页面 ---------- */
+
+function renderHTML(key) {
+  const pagePath = `/${escapeHtml(key)}`;
+  const convertPath = `${pagePath}/convert`;
+
+  return `<!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${name}</title>
-  <style>
-    :root {
-      --process-color: #4CAF50;
-      --service-color: #2196F3;
-      --glass-opacity: 0.8;
-    }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      background: url('${img}') center/cover fixed;
-      background-size: cover;
-      background-position: center;
-    }
-  .dashboard {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 30px;
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 80px 20px 20px;
-    }
-  .panel {
-      background: rgba(255,255,255,var(--glass-opacity));
-      border-radius: 8px;
-      padding: 20px;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.1);
-      width: 100%;
-      box-sizing: border-box;
-    }
-  .panel-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-    }
-  .panel-title {
-      margin: 0;
-      font-size: 1.5rem;
-      color: #2c3e50;
-    }
-  .btn-group {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-      gap: 10px;
-      margin-bottom: 20px;
-    }
-  .api-btn {
-      padding: 12px;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.2s;
-      font-size: 0.9rem;
-      text-align: center;
-      color: white;
-    }
-  .process-btn {
-      background: var(--process-color);
-    }
-  .service-btn {
-      background: var(--service-color);
-    }
-  .api-btn:hover {
-      opacity: 0.9;
-      transform: translateY(-1px);
-    }
-   .view-all-btn {
-      padding: 8px 16px;
-      background: #4CAF50;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 0.9rem;
-    }
-  .start-all-btn {
-      padding: 8px 16px;
-      background: #2196F3;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 0.9rem;
-    }
-  .result-box {
-      padding: 15px;
-      background: rgba(255,255,255,0.9);
-      border-radius: 6px;
-      min-height: 200px;
-      font-family: monospace;
-      white-space: pre-wrap;
-      overflow-wrap: break-word;
-      word-break: break-all;
-      overflow-y: auto;
-      max-height: 400px;
-      width: 100%;
-      box-sizing: border-box;
-    }
-  .timestamp {
-      color: #666;
-      font-size: 0.8rem;
-      margin-bottom: 5px;
-    }
-  .edit-btn {
-      position: fixed;
-      top: 25px;
-      right: 25px;
-      padding: 12px 30px;
-      background: #2196F3;
-      color: white;
-      border: none;
-      border-radius: 10px;
-      cursor: pointer;
-      font-size: 1.1rem;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    }
-  @media (max-width: 768px) {
-    .dashboard {
-      grid-template-columns: 1fr;
-      padding: 60px 10px 10px;
-    }
-    .result-box {
-      font-size: 0.9em;
-    }
-  }
-  </style>
-  <script>
-    function handleClick(url, panelType, label) {
-      const container = document.getElementById(panelType + '-result');
-      const timestamp = '<div class="timestamp">' + new Date().toLocaleString() + '</div>';
-      const loadingMsg = '<div class="loading" id="' + url + '">⏳ 请求中...</div>';
-      const loadingDiv = document.createElement('div');
-      loadingDiv.innerHTML = timestamp + loadingMsg;
-      const loadingElement = loadingDiv.querySelector('.loading');
-      container.appendChild(loadingDiv);
-      fetch(url)
-        .then(response => {
-          if (!response.ok) throw new Error('HTTP'+ response.status);
-          return response.text();
-        })
-        .then(data => {
-          try {
-            const jsonData = JSON.parse(data);
-            if (jsonData.status === "success" && jsonData.processes) {
-              let formattedData = label + '进程查询成功\\n';
-              const user = jsonData.processes[0].USER;
-              formattedData += "[用户：" + user + "]\\n";
-              jsonData.processes.forEach(process => {
-                const { PID, STARTED, TIME, COMMAND } = process;
-                formattedData += JSON.stringify({ "PID": PID, "STARTED": STARTED, "TIME": TIME, "进程名": COMMAND }) + ",\\n";
-              });
-              formattedData = formattedData.slice(0, -2);
-              loadingElement.innerHTML = '<pre style="white-space: pre-wrap;">' + formattedData + '</pre>';
-            } else {
-              loadingElement.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
-              if (panelType === 'process') {
-                const infoButtons = document.querySelectorAll('.service-btn');
-                infoButtons.forEach(btn => {
-                  if (btn.title === url.replace('list', 'info')) {
-                    btn.click();
-                  }
-                });
-              }
-            }
-          } catch (parseError) {
-            loadingElement.innerHTML = '<pre style="white-space: pre-wrap;">' + label + data + '</pre>';
-          }
-        })
-        .catch(error => {
-          const errorMsg = '<div class="error">❌ 请求失败:'+ error.message + '</div>';
-          loadingElement.innerHTML = errorMsg;
-        });
-    }
-    async function startAllServices() {
-      const buttons = document.querySelectorAll('.service-btn');
-      for (const btn of buttons) {
-        btn.click();
-        await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 200));  //启动全部按钮延迟设定
-      }
-    }
-    async function viewAllProcesses() {
-      const buttons = document.querySelectorAll('.process-btn');
-      for (const btn of buttons) {
-        btn.click();
-        await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 200));  //查看所有按钮延迟设定
-      }
-    }
-  </script>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>订阅转换</title>
+<style>
+  :root{--bg:#0b1220;--card:#0f1724;--muted:#98a0b3;--text:#e6eef8;--accent:#2f80ed}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,'PingFang SC',Noto Sans SC}
+  body{background:linear-gradient(180deg,var(--bg),#07101a);color:var(--text);padding:18px}
+  .wrap{max-width:920px;margin:0 auto}
+  .card{background:var(--card);border-radius:12px;padding:16px;border:1px solid rgba(255,255,255,0.03);box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+  h1{margin:0 0 8px;font-size:20px}
+  .muted{color:var(--muted);font-size:13px;margin-bottom:12px}
+  .grid{display:grid;grid-template-columns:1fr;gap:10px}
+  @media(min-width:720px){.grid{grid-template-columns:1fr 1fr}}
+  label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+  input,textarea{width:100%;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.03);background:#071126;color:var(--text);font-size:14px;outline:none}
+  textarea{min-height:160px;resize:vertical;font-family:ui-monospace,monospace}
+  .row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  .btn{padding:10px 14px;border-radius:10px;border:0;cursor:pointer;font-weight:600}
+  .primary{background:var(--accent);color:#fff}
+  .secondary{background:#102135;color:var(--text)}
+  .status{margin-top:8px;color:var(--muted);font-size:13px}
+  code{background:rgba(255,255,255,0.02);padding:2px 6px;border-radius:6px}
+</style>
 </head>
 <body>
-  <button class="edit-btn" onclick="location.href='/${token}/edit'">⚙️ 配置管理</button>
-  <div class="dashboard">
-    <div class="panel">
-      <div class="panel-header">
-        <h2 class="panel-title">查询进程</h2>
-        <button class="view-all-btn" onclick="viewAllProcesses()">查询所有</button>
+  <div class="wrap">
+    <div class="card">
+      <h1>订阅转换器</h1>
+      <div class="muted">白嫖哥订阅转换</div>
+
+      <form id="form">
+        <div class="grid">
+          <div>
+            <label>白嫖订阅</label>
+            <input id="source" value="https://cfxr.eu.org/getSub" placeholder="订阅地址 (默认 https://cfxr.eu.org/getSub)"/>
+          </div>
+          <div>
+            <label>订阅器</label>
+            <input id="subHost" placeholder="例如：example.com （无需 http/https）" />
+          </div>
+
+          <div>
+            <label>反代ip</label>
+            <input id="proxyIp" placeholder="例如：proxyip.example.com" />
+          </div>
+          <div>
+            <label>反代端口</label>
+            <input id="proxyPort" placeholder="例如：443" inputmode="numeric" />
+          </div>
+        </div>
+
+        <div style="margin-top:12px">
+          <label>转换结果</label>
+          <textarea id="output" readonly placeholder="转换结果会显示在这里"></textarea>
+        </div>
+
+        <div class="row">
+          <button class="btn primary" id="runBtn" type="submit">开始转换</button>
+          <button class="btn secondary" id="copyBtn" type="button">复制结果</button>
+        </div>
+        <div class="status" id="status"></div>
+      </form>
+
+      <div class="muted" style="margin-top:12px;font-size:13px">
+        说明：解析订阅中的 <code>vless://</code> 链接，将 <code>path</code> 中的 <code>proxyip</code> 和 <code>port(数字)</code>
+        分别替换为你填写的“反代ip / 反代端口”，并输出：
+        <br/><code>https://{订阅器}/sub?uuid={UUID}&amp;{其余原查询参数（path 已替换并 urlencode）}</code>
       </div>
-      <div class="btn-group">
-        ${generateButtons(finalList, 'process')}
-      </div>
-      <div class="result-box" id="process-result"></div>
-    </div>
-    <div class="panel">
-      <div class="panel-header">
-        <h2 class="panel-title">服务管理</h2>
-        <button class="start-all-btn" onclick="startAllServices()">启动全部</button>
-      </div>
-      <div class="btn-group">
-        ${generateButtons(finalInfo,'service')}
-      </div>
-      <div class="result-box" id="service-result"></div>
     </div>
   </div>
-</body>
-</html>
-`;
-        return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
-      }
-        // 配置管理页面的逻辑
-        if (path.length === 2 && path[0] === token && path[1] === "edit") {
-            const [list, info] = await Promise.all([
-                LISTKV.get("listadd") || "",
-                INFOKV.get("infoadd") || ""
-            ]);
-            const html = `
-      <!DOCTYPE html>
-      <html lang="zh-CN">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>配置管理</title>
-        <style>
-          :root {
-            --primary-color: #2196F3;
-          }
-          body {
-            margin: 0;
-            min-height: 100vh;
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            background: url('${img}') center/cover fixed;
-            background-size: cover;
-            padding: 20px;
-          }
-        .edit-container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: rgba(255,255,255,0.95);
-            border-radius: 8px;
-            padding: 30px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-          }
-        #message {
-          position: fixed;
-          top: 20px;
-          left: 50%;
-          transform: translateX(-50%);
-          padding: 12px 20px;
-          border-radius: 6px;
-          background: rgba(0,0,0,0.8);
-          color: white;
-          max-width: 400px;
-          transition: opacity 0.3s;
-          display: none;
-        }
-        .editor-group {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 30px;
-            margin-bottom: 30px;
-          }
-        textarea {
-          width: 100%;
-          height: 400px;
-          padding: 15px;
-          border: 2px solid var(--primary-color);
-          border-radius: 8px;
-          font-family: monospace;
-          resize: vertical;
-          background: rgba(255,255,255,0.9);
-        }
-        .button-group {
-            display: flex;
-            gap: 20px;
-            justify-content: center;
-          }
-        .save-btn {
-            padding: 12px 40px;
-            background: var(--primary-color);
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-          }
 
-        .back-btn {
-            padding: 12px 40px;
-            background: #4CAF50;
-            color: white;
-            border-radius: 6px;
-            text-decoration: none;
-          }
-        @media (max-width: 768px) {
-          .editor-group {
-            grid-template-columns: 1fr;
-          }
-          textarea {
-            height: 300px;
-          }
-        }
-      </style>
-    </head>
-    <body>
-      <div id="message"></div>
-      <div class="edit-container">
-        <h1>配置管理中心</h1>
-        <div class="editor-group">
-          <div>
-            <h2>监控端点配置 (LIST)</h2>
-            <textarea id="list">${list}</textarea>
-          </div>
-          <div>
-            <h2>服务配置 (INFO)</h2>
-            <textarea id="info">${info}</textarea>
-          </div>
-        </div>
-        <div class="button-group">
-          <button class="save-btn" onclick="saveConfig()">💾 保存配置</button>
-          <a href="/${token}" class="back-btn">📊 返回看板</a>
-        </div>
-      </div>
-      <script>
-        const message = document.getElementById('message');
-        async function saveConfig() {
-          const listVal = document.getElementById("list").value;
-          const infoVal = document.getElementById("info").value;
-          message.style.display = 'block';
-          message.textContent = '正在保存配置...';
-          message.style.backgroundColor = '#2196F3';
-          try {
-            const response = await fetch(window.location.pathname, {
-              method: 'POST',
-              headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-              body: listVal + '###' + infoVal
-            });
-            if (!response.ok) {
-              const error = await response.text();
-              throw new Error(error);
-            }
-            message.textContent = '配置保存成功！';
-            message.style.backgroundColor = '#4CAF50';
-            setTimeout(() => message.style.display = 'none', 2000);
-          } catch (error) {
-            message.textContent = '保存失败:'+ error.message;
-            message.style.backgroundColor = '#f44336';
-            setTimeout(() => message.style.display = 'none', 3000);
-          }
-        }
-      </script>
-    </body>
-    </html>
-  `;
-            return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
-        }
-       // 如果未匹配任何路径，则返回 404
-        return new Response("404 Not Found", { status: 404 });
+<script>
+const form = document.getElementById('form');
+const sourceEl = document.getElementById('source');
+const subHostEl = document.getElementById('subHost');
+const proxyIpEl = document.getElementById('proxyIp');
+const proxyPortEl = document.getElementById('proxyPort');
+const outputEl = document.getElementById('output');
+const runBtn = document.getElementById('runBtn');
+const copyBtn = document.getElementById('copyBtn');
+const statusEl = document.getElementById('status');
 
-  } catch (error) {
-    // 捕获和记录处理错误
-    console.error(`处理失败: ${error.stack}`);
-    return new Response(JSON.stringify({
-      status: "error",
-      message: error.message,
-      code: "SYSTEM_ERROR"
-    }), { status: 500 });
+const CONVERT_URL = location.origin + '${convertPath}';
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  setStatus('正在转换…');
+  setDisabled(true);
+  outputEl.value = '';
+  try {
+    const payload = {
+      source: sourceEl.value.trim(),
+      subHost: subHostEl.value.trim(),
+      proxyIp: proxyIpEl.value.trim(),
+      proxyPort: proxyPortEl.value.trim()
+    };
+    const res = await fetch(CONVERT_URL, { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(payload) });
+    const data = await res.json().catch(()=>({}));
+    if (!res.ok || !data.ok) {
+      throw new Error((data && data.error) || ('HTTP ' + res.status));
+    }
+    outputEl.value = data.result || '';
+    setStatus('转换完成，共 ' + (data.result ? data.result.split(/\\n/).length : 0) + ' 条');
+  } catch (err) {
+    setStatus('出错：' + (err && err.message ? err.message : String(err)));
+  } finally {
+    setDisabled(false);
   }
+});
+
+copyBtn.addEventListener('click', async () => {
+  if (!outputEl.value) return setStatus('没有可复制内容');
+  try {
+    await navigator.clipboard.writeText(outputEl.value);
+    setStatus('已复制到剪贴板');
+  } catch {
+    setStatus('复制失败：请手动选择复制');
+  }
+});
+
+function setStatus(t){ statusEl.textContent = t || ''; }
+function setDisabled(b){
+  [sourceEl, subHostEl, proxyIpEl, proxyPortEl, runBtn, copyBtn].forEach(el => el.disabled = b);
 }
-};
+</script>
+</body>
+</html>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[ch]));
+}
