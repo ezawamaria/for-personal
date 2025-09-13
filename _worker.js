@@ -9,7 +9,7 @@ export default {
 
     const pathname = url.pathname;
 
-    // 项目页面：仅当路径等于 /{KEY} 时返回页面
+    // 项目页面
     if ((pathname === `/${key}` || pathname === `/${key}/`) && request.method === "GET") {
       return new Response(renderHTML(key), {
         status: 200,
@@ -17,7 +17,7 @@ export default {
       });
     }
 
-    // 转换接口： POST /{KEY}/convert
+    // 转换接口
     if (pathname === `/${key}/convert` && request.method === "POST") {
       try {
         const payload = await request.json().catch(() => ({}));
@@ -27,14 +27,10 @@ export default {
         const proxyPort = (payload.proxyPort || "").trim();
 
         if (!source) return jsonError("请填写『白嫖订阅』地址");
-        if (!subHost) return jsonError("请填写『订阅器』域名或主机名");
-        // 改动：反代ip/端口可为空；若 proxyPort 提供则必须为数字
         if (proxyPort && !/^\d+$/.test(proxyPort)) return jsonError("『反代端口』应为数字");
 
-        // 去掉协议与尾部斜杠
         subHost = subHost.replace(/^https?:\/\//i, "").replace(/\/+$/i, "");
 
-        // 拉取订阅（不缓存）
         const resp = await fetch(source, { cf: { cacheTtl: 0 } });
         if (!resp.ok) return jsonError(`拉取订阅失败：HTTP ${resp.status}`);
         const text = await resp.text();
@@ -48,7 +44,6 @@ export default {
       }
     }
 
-    // 其余一律 404
     return new Response("404 Not Found", { status: 404 });
   },
 };
@@ -69,8 +64,7 @@ function jsonError(msg) {
 }
 
 /**
- * 将订阅文本中的每条 vless:// 链接转换为目标格式
- * 返回数组（每项一条最终 URL）
+ * 将订阅文本中的每条 vless:// 链接转换为目标格式，并去重
  */
 function convertSubscription(text, subHost, proxyIp, proxyPort) {
   const lines = String(text || "").split(/\r?\n/);
@@ -79,79 +73,70 @@ function convertSubscription(text, subHost, proxyIp, proxyPort) {
   for (let raw of lines) {
     if (!raw) continue;
     const line = raw.trim();
-
-    // 只取以 vless:// 开头或包含 vless:// 的第一段（并去掉后面的注释 like " by:xxx"）
     if (!/vless:\/\//i.test(line)) continue;
-    const piece = line.split(/\s+/)[0]; // 去掉 by: 之类的尾巴
-    const clean = piece.split("#")[0]; // 去掉 fragment
+
+    const piece = line.split(/\s+/)[0];
+    const clean = piece.split("#")[0];
 
     const converted = convertOneVless(clean, subHost, proxyIp, proxyPort);
     if (converted) results.push(converted);
   }
-  return results;
+
+  return [...new Set(results)];
 }
 
 /**
  * 单条 vless:// 链接转换
- * 输出格式：
- *   https://{subHost}/sub?uuid={UUID}&{原查询串（path 已替换并 encodeURIComponent）}
+ * - subHost 有值 → 输出 https://{subHost}/sub?uuid=...
+ * - subHost 为空 → 输出修改后的 vless://...
  */
 function convertOneVless(vlessUrl, subHost, proxyIp, proxyPort) {
-  // 基本解析： vless://{UUID}@{host}:{port}?{query}
   const re = /^vless:\/\/([^@]+)@([^?]+)(?:\?([^#]*))?/i;
   const m = vlessUrl.match(re);
   if (!m) return null;
 
   const uuid = m[1];
-  let qs = m[3] || ""; // 可能为空
-  // 移除 fragment（已经通过 regex 捕获避免，但保险起见）
+  const server = m[2];
+  let qs = m[3] || "";
   qs = qs.split("#")[0];
 
-  // 替换 path 参数内的 proxyip 和 port(...)（只替换 path 值部分）
   const newQs = replacePathInQuery(qs, proxyIp, proxyPort);
 
-  // 拼接最终 URL：注意使用 & 连接 uuid 与原查询串
-  const tail = newQs ? "&" + newQs : "";
-  return `https://${subHost}/sub?uuid=${encodeURIComponent(uuid)}${tail}`;
+  if (subHost) {
+    // 输出为 https://{subHost}/sub?uuid=...
+    const tail = newQs ? "&" + newQs : "";
+    return `https://${subHost}/sub?uuid=${encodeURIComponent(uuid)}${tail}`;
+  } else {
+    // 输出为修改后的 vless://...
+    const tail = newQs ? "?" + newQs : "";
+    return `vless://${uuid}@${server}${tail}`;
+  }
 }
 
 /**
- * 在查询字符串中只替换 path= 的值，其他键值对保持原样并保留原有编码方式。
- * 若 proxyIp 或 proxyPort 为空，则对应该项不做替换（保留原始订阅数据）。
+ * 在查询字符串中只替换 path= 的值
+ * 若 proxyIp 或 proxyPort 为空，则对应项不替换
  */
 function replacePathInQuery(qs, proxyIp, proxyPort) {
   if (!qs) return "";
-
-  // 只替换第一个 path= 的值（如有多个 path 参数通常不常见）
-  // 捕获分组： (前缀或开头) (& 或 开头) path= (value)
   const re = /(^|&)path=([^&]*)/i;
   const match = qs.match(re);
   if (!match) return qs;
 
-  const prefix = match[1]; // "" 或 "&"
+  const prefix = match[1];
   const encodedVal = match[2] || "";
 
   let decoded;
   try {
     decoded = decodeURIComponent(encodedVal);
   } catch {
-    // 若解码失败，则用原始字符串（尽力处理）
     decoded = encodedVal;
   }
 
-  // 若提供了 proxyIp，则替换 proxyip，否则保留原始
-  if (proxyIp) {
-    decoded = decoded.replace(/proxyip/gi, proxyIp);
-  }
-
-  // 若提供了 proxyPort，则替换 port(数字) -> proxyPort（此处不保留右括号）
-  if (proxyPort) {
-    decoded = decoded.replace(/port\(\d+\)/gi, proxyPort);
-  }
+  if (proxyIp) decoded = decoded.replace(/proxyip/gi, proxyIp);
+  if (proxyPort) decoded = decoded.replace(/port\(\d+\)/gi, proxyPort);
 
   const newEncoded = encodeURIComponent(decoded);
-
-  // 用替换后的 path 值替换原 qs 中的对应片段（仅第一次出现）
   return qs.replace(re, `${prefix}path=${newEncoded}`);
 }
 
@@ -199,26 +184,25 @@ function renderHTML(key) {
         <div class="grid">
           <div>
             <label>白嫖订阅</label>
-            <input id="source" value="https://cfxr.eu.org/getSub" placeholder="订阅地址 (默认 https://cfxr.eu.org/getSub)"/>
+            <input id="source" value="https://cfxr.eu.org/getSub" />
           </div>
           <div>
-            <label>订阅器</label>
-            <input id="subHost" placeholder="例如：owo.o00o.ooo （无需 http/https）" />
-          </div>
-
-          <div>
-            <label>反代ip（留空则使用订阅原始数据）</label>
-            <input id="proxyIp" placeholder="例如：sjc.o00o.ooo（可留空）" />
+            <label>订阅器（留空则输出 vless 原始格式）</label>
+            <input id="subHost" placeholder="例如：owo.o00o.ooo" />
           </div>
           <div>
-            <label>反代端口（留空则使用订阅原始数据）</label>
-            <input id="proxyPort" placeholder="例如：443（可留空）" inputmode="numeric" />
+            <label>反代ip（留空则使用原始数据）</label>
+            <input id="proxyIp" placeholder="sjc.o00o.ooo（可留空）" />
+          </div>
+          <div>
+            <label>反代端口（留空则使用原始数据）</label>
+            <input id="proxyPort" placeholder="443（可留空）" inputmode="numeric" />
           </div>
         </div>
 
         <div style="margin-top:12px">
           <label>转换结果</label>
-          <textarea id="output" readonly placeholder="转换结果会显示在这里"></textarea>
+          <textarea id="output" readonly></textarea>
         </div>
 
         <div class="row">
@@ -227,12 +211,6 @@ function renderHTML(key) {
         </div>
         <div class="status" id="status"></div>
       </form>
-
-      <div class="muted" style="margin-top:12px;font-size:13px">
-        说明：解析订阅中的 <code>vless://</code> 链接，将 <code>path</code> 中的 <code>proxyip</code> 和 <code>port(数字)</code>
-        分别替换为你填写的“反代ip / 反代端口”。若对应输入框留空，则会保留订阅里的原始数据（不替换）。
-        <br/><code>输出格式： https://{订阅器}/sub?uuid={UUID}&amp;{其余原查询参数（path 已替换并 urlencode）}</code>
-      </div>
     </div>
   </div>
 
@@ -263,13 +241,11 @@ form.addEventListener('submit', async (e) => {
     };
     const res = await fetch(CONVERT_URL, { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(payload) });
     const data = await res.json().catch(()=>({}));
-    if (!res.ok || !data.ok) {
-      throw new Error((data && data.error) || ('HTTP ' + res.status));
-    }
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
     outputEl.value = data.result || '';
-    setStatus('转换完成，共 ' + (data.result ? data.result.split(/\\n/).length : 0) + ' 条');
+    setStatus('转换完成，共 ' + (data.result ? data.result.split(/\\n/).length : 0) + ' 条（已去重）');
   } catch (err) {
-    setStatus('出错：' + (err && err.message ? err.message : String(err)));
+    setStatus('出错：' + err.message);
   } finally {
     setDisabled(false);
   }
@@ -281,7 +257,7 @@ copyBtn.addEventListener('click', async () => {
     await navigator.clipboard.writeText(outputEl.value);
     setStatus('已复制到剪贴板');
   } catch {
-    setStatus('复制失败：请手动选择复制');
+    setStatus('复制失败，请手动复制');
   }
 });
 
