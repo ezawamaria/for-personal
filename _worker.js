@@ -28,8 +28,8 @@ export default {
 
         if (!source) return jsonError("请填写『白嫖订阅』地址");
         if (!subHost) return jsonError("请填写『订阅器』域名或主机名");
-        if (!proxyIp) return jsonError("请填写『反代ip』");
-        if (!proxyPort || !/^\d+$/.test(proxyPort)) return jsonError("『反代端口』应为数字");
+        // 改动：反代ip/端口可为空；若 proxyPort 提供则必须为数字
+        if (proxyPort && !/^\d+$/.test(proxyPort)) return jsonError("『反代端口』应为数字");
 
         // 去掉协议与尾部斜杠
         subHost = subHost.replace(/^https?:\/\//i, "").replace(/\/+$/i, "");
@@ -117,7 +117,7 @@ function convertOneVless(vlessUrl, subHost, proxyIp, proxyPort) {
 
 /**
  * 在查询字符串中只替换 path= 的值，其他键值对保持原样并保留原有编码方式。
- * replacer 接受已 decode 的 path 值，返回要重新 encodeURIComponent 后填回的字符串值。
+ * 若 proxyIp 或 proxyPort 为空，则对应该项不做替换（保留原始订阅数据）。
  */
 function replacePathInQuery(qs, proxyIp, proxyPort) {
   if (!qs) return "";
@@ -139,9 +139,15 @@ function replacePathInQuery(qs, proxyIp, proxyPort) {
     decoded = encodedVal;
   }
 
-  // 执行替换：proxyip -> proxyIp； port(数字) -> proxyPort)
+  // 若提供了 proxyIp，则替换 proxyip，否则保留原始
+  if (proxyIp) {
     decoded = decoded.replace(/proxyip/gi, proxyIp);
+  }
+
+  // 若提供了 proxyPort，则替换 port(数字) -> proxyPort（此处不保留右括号）
+  if (proxyPort) {
     decoded = decoded.replace(/port\(\d+\)/gi, proxyPort);
+  }
 
   const newEncoded = encodeURIComponent(decoded);
 
@@ -187,7 +193,7 @@ function renderHTML(key) {
   <div class="wrap">
     <div class="card">
       <h1>订阅转换器</h1>
-      <div class="muted">白嫖哥订阅转换</div>
+      <div class="muted">仅当路径为 <code>${pagePath}</code> 时打开本页面；其它路径返回 404。</div>
 
       <form id="form">
         <div class="grid">
@@ -197,16 +203,16 @@ function renderHTML(key) {
           </div>
           <div>
             <label>订阅器</label>
-            <input id="subHost" placeholder="例如：example.com （无需 http/https）" />
+            <input id="subHost" placeholder="例如：owo.o00o.ooo （无需 http/https）" />
           </div>
 
           <div>
-            <label>反代ip</label>
-            <input id="proxyIp" placeholder="例如：proxyip.example.com" />
+            <label>反代ip（留空则使用订阅原始数据）</label>
+            <input id="proxyIp" placeholder="例如：sjc.o00o.ooo（可留空）" />
           </div>
           <div>
-            <label>反代端口</label>
-            <input id="proxyPort" placeholder="例如：443" inputmode="numeric" />
+            <label>反代端口（留空则使用订阅原始数据）</label>
+            <input id="proxyPort" placeholder="例如：443（可留空）" inputmode="numeric" />
           </div>
         </div>
 
@@ -224,8 +230,8 @@ function renderHTML(key) {
 
       <div class="muted" style="margin-top:12px;font-size:13px">
         说明：解析订阅中的 <code>vless://</code> 链接，将 <code>path</code> 中的 <code>proxyip</code> 和 <code>port(数字)</code>
-        分别替换为你填写的“反代ip / 反代端口”，并输出：
-        <br/><code>https://{订阅器}/sub?uuid={UUID}&amp;{其余原查询参数（path 已替换并 urlencode）}</code>
+        分别替换为你填写的“反代ip / 反代端口”。若对应输入框留空，则会保留订阅里的原始数据（不替换）。
+        <br/><code>输出格式： https://{订阅器}/sub?uuid={UUID}&amp;{其余原查询参数（path 已替换并 urlencode）}</code>
       </div>
     </div>
   </div>
