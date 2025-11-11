@@ -195,17 +195,17 @@ http://sc.rrs.169ol.com:80/PLTV/88888888/224/3221227942/index.m3u8
 http://sc.rrs.169ol.com:80/PLTV/88888888/224/3221227811/index.m3u8
 #EXTINF:-1 group-title="四川省内频道",广电星空购物
 http://sc.rrs.169ol.com:80/PLTV/88888888/224/3221227519/index.m3u8
-#EXTINF:-1 group-title="四川省内频道",成都综合
+#EXTINF:-1 group-title="四川省内频道" tvg-logo="http://epg.51zmt.top:8000/tb1/sheng/cdtv1.png",成都综合
 http://sc.rrs.169ol.com:80//PLTV/88888888/224/3221227495/index.m3u8
-#EXTINF:-1 group-title="四川省内频道",成都经济
+#EXTINF:-1 group-title="四川省内频道" tvg-logo="http://epg.51zmt.top:8000/tb1/sheng/cdtv2.png",成都经济
 http://sc.rrs.169ol.com:80//PLTV/88888888/224/3221227949/index.m3u8
-#EXTINF:-1 group-title="四川省内频道",成都生活
+#EXTINF:-1 group-title="四川省内频道" tvg-logo="http://epg.51zmt.top:8000/tb1/sheng/cdtv3.png",成都生活
 http://sc.rrs.169ol.com:80/PLTV/88888888/224/3221227950/index.m3u8
-#EXTINF:-1 group-title="四川省内频道",成都影视
+#EXTINF:-1 group-title="四川省内频道" tvg-logo="http://epg.51zmt.top:8000/tb1/sheng/cdtv4.png",成都影视
 http://sc.rrs.169ol.com:80/PLTV/88888888/224/3221227951/index.m3u8
-#EXTINF:-1 group-title="四川省内频道",成都公共
+#EXTINF:-1 group-title="四川省内频道" tvg-logo="http://epg.51zmt.top:8000/tb1/sheng/cdtv5.png",成都公共
 http://sc.rrs.169ol.com:80//PLTV/88888888/224/3221227587/index.m3u8
-#EXTINF:-1 group-title="四川省内频道",成都少儿
+#EXTINF:-1 group-title="四川省内频道" tvg-logo="http://epg.51zmt.top:8000/tb1/sheng/cdtv6.png",成都少儿
 http://sc.rrs.169ol.com:80/PLTV/88888888/224/3221227953/index.m3u8
 #EXTINF:-1 group-title="四川省内频道",成都每日购物
 http://sc.rrs.169ol.com:80/PLTV/88888888/224/3221227920/index.m3u8
@@ -307,7 +307,7 @@ http://sc.rrs.169ol.com/PLTV/88888888/224/3221227149/index.m3u8
 http://sc.rrs.169ol.com/PLTV/88888888/224/3221227189/index.m3u8
 #EXTINF:-1 group-title="卡通频道",动漫秀场
 http://sc.rrs.169ol.com:80/PLTV/88888888/224/3221227977/index.m3u8
-#EXTINF:-1 group-title="卡通频道",成都少儿
+#EXTINF:-1 group-title="卡通频道" tvg-logo="http://epg.51zmt.top:8000/tb1/sheng/cdtv6.png",成都少儿
 http://sc.rrs.169ol.com:80/PLTV/88888888/224/3221227953/index.m3u8
 
 #EXTINF:-1 group-title="测试频道" tvg-logo="http://epg.51zmt.top:8000/tb1/gt/fenghuangzhongwen.png",凤凰卫视中文台
@@ -391,4 +391,3 @@ http://sc.rrs.169ol.com/PLTV/88888888/224/3221227571/index.m3u8
 http://sc.rrs.169ol.com/PLTV/88888888/224/3221227573/index.m3u8
 #EXTINF:-1 group-title="熊猫频道",iPanda6
 http://sc.rrs.169ol.com/PLTV/88888888/224/3221227575/index.m3u8
-
