@@ -309,7 +309,7 @@ http://bxtv.3a.ink/api.php?id=fhzx
 #EXTINF:-1 group-title="测试频道" tvg-logo="https://gitee.com/suxuang/logo/raw/master/mylogo/凤凰香港台.png",凤凰卫视香港台
 http://bxtv.3a.ink/api.php?id=fhhk
 #EXTINF:-1 group-title="测试频道" tvg-logo="https://gitee.com/suxuang/logo/raw/master/mylogo/香港卫视.png",香港卫视
-http://anren.live/HK/BSJDUFpB.m3u8
+https://piccpndali.v.myalicdn.com/audio/xianggangweishi_2.m3u8
 #EXTINF:-1 group-title="测试频道" tvg-logo="https://gitee.com/suxuang/logo/raw/master/mylogo/TVB翡翠台.png",TVB翡翠台
 http://bxtv.3a.ink/api.php?id=fct
 #EXTINF:-1 group-title="测试频道",MOMOTV
@@ -344,19 +344,3 @@ rtmp://f13h.mine.nu/sat/tv721
 rtmp://f13h.mine.nu/sat/tv091
 #EXTINF:-1 group-title="测试频道",中天娱乐
 http://61.221.215.25:8800/hls/47/index.m3u8
-
-#EXTINF:-1 group-title="熊猫频道",iPanda1
-http://sc.rrs.169ol.com/PLTV/88888888/224/3221227565/index.m3u8
-#EXTINF:-1 group-title="熊猫频道",iPanda2
-http://sc.rrs.169ol.com/PLTV/88888888/224/3221227567/index.m3u8
-#EXTINF:-1 group-title="熊猫频道",iPanda3
-http://sc.rrs.169ol.com/PLTV/88888888/224/3221227569/index.m3u8
-#EXTINF:-1 group-title="熊猫频道",iPanda4
-http://sc.rrs.169ol.com/PLTV/88888888/224/3221227571/index.m3u8
-#EXTINF:-1 group-title="熊猫频道",iPanda5
-http://sc.rrs.169ol.com/PLTV/88888888/224/3221227573/index.m3u8
-#EXTINF:-1 group-title="熊猫频道",iPanda6
-http://sc.rrs.169ol.com/PLTV/88888888/224/3221227575/index.m3u8
-
-
-
