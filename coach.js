@@ -1,13 +1,25 @@
 // ============================================================
-// 教练课程查询系统 - Cloudflare Worker 单文件部署版
+// 🎾过网教练学校课时查询系统 - Cloudflare Worker 单文件部署版
 // KV Binding 名称: COACH_KV
+
 // ============================================================
 
 const RECORDS_KEY = 'records';
 const USERS_KEY = 'users';
 const ADMIN_PASSWORD_KEY = 'admin_password';
-const DEFAULT_ADMIN_PASSWORD = 'admin123';
+const DEFAULT_ADMIN_PASSWORD = '123456';
 const SESSION_TTL = 86400; // 24小时
+const META_KEY = 'records_meta';      // 数据更新时间元信息
+const PBKDF2_ITERATIONS = 10000;      // 兼顾 Cloudflare 免费版 CPU 限制；付费计划可调大
+const LOCK_LIMIT = 5;                 // 10 分钟内最多登录失败次数
+const LOCK_WINDOW = 600;              // 限速窗口（秒）
+
+// 统一附加的安全响应头
+const SEC_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'same-origin',
+};
 
 // ─── 工具函数 ──────────────────────────────────────────────
 
@@ -20,13 +32,13 @@ function generateToken() {
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json;charset=utf-8' },
+    headers: { 'Content-Type': 'application/json;charset=utf-8', ...SEC_HEADERS },
   });
 }
 
 function html(content) {
   return new Response(content, {
-    headers: { 'Content-Type': 'text/html;charset=utf-8' },
+    headers: { 'Content-Type': 'text/html;charset=utf-8', ...SEC_HEADERS },
   });
 }
 
@@ -37,11 +49,114 @@ function getCookie(request, name) {
 }
 
 function setCookieHeader(name, value, maxAge) {
-  return `${name}=${value}; Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Strict`;
+  return `${name}=${value}; Path=/; HttpOnly; Secure; Max-Age=${maxAge}; SameSite=Strict`;
 }
 
-async function getAdminPwd(env) {
-  return (await env.COACH_KV.get(ADMIN_PASSWORD_KEY)) || DEFAULT_ADMIN_PASSWORD;
+// 东八区当前时间字符串
+function bjTime() {
+  return new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+}
+
+// 安全读取 KV 中的 JSON。键为空/内容损坏时回退默认值，
+// 避免单个坏键让整个接口抛 500（页面显示"加载失败"且无法自助恢复）
+function parseKV(raw, fallback) {
+  if (!raw) return fallback;
+  try {
+    const v = JSON.parse(raw);
+    return v == null ? fallback : v;
+  } catch (e) {
+    console.error('KV 内容损坏，已回退默认值', e);
+    return fallback;
+  }
+}
+
+// 追加一条日志（type: 'coach' 教练登录 / 'admin' 管理员登录或操作），保留最近 200 条
+// ⚠ 必须 await 调用：Cloudflare Worker 在响应返回后会取消尚未完成的挂起请求，
+//   原先的"即发即忘"写法会让 addLog 内部的 KV 读写被中途掐断，导致日志静默丢失。
+async function addLog(env, name, type) {
+  try {
+    const rawLogs = await env.COACH_KV.get('login_logs');
+    let logs = rawLogs ? JSON.parse(rawLogs) : [];
+    if (!Array.isArray(logs)) logs = [];
+    logs.unshift({ name, time: bjTime(), type: type || 'coach' });
+    logs = logs.slice(0, 200);
+    await env.COACH_KV.put('login_logs', JSON.stringify(logs));
+  } catch (e) { console.error('日志记录失败', e); }
+}
+
+// ─── 登录限速（KV 失败计数，到期自动清零） ─────────────────
+
+async function getFailCount(env, scope) {
+  const v = await env.COACH_KV.get('fail:' + scope);
+  return v ? (parseInt(v, 10) || 0) : 0;
+}
+
+async function recordFail(env, scope) {
+  const n = (await getFailCount(env, scope)) + 1;
+  await env.COACH_KV.put('fail:' + scope, String(n), { expirationTtl: LOCK_WINDOW });
+  return n;
+}
+
+async function clearFails(env, scope) {
+  await env.COACH_KV.delete('fail:' + scope);
+}
+
+// ─── 密码哈希（PBKDF2-SHA256，兼容旧明文并自动升级） ────────
+
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function hashPassword(password, saltHex) {
+  const enc = new TextEncoder();
+  let salt;
+  if (saltHex) {
+    salt = new Uint8Array(saltHex.match(/.{2}/g).map(h => parseInt(h, 16)));
+  } else {
+    salt = crypto.getRandomValues(new Uint8Array(16));
+  }
+  const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: PBKDF2_ITERATIONS },
+    key,
+    256
+  );
+  const toHex = arr => [...arr].map(b => b.toString(16).padStart(2, '0')).join('');
+  return { salt: toHex(salt), hash: toHex(new Uint8Array(bits)) };
+}
+
+// stored: 明文字符串（旧数据）或 {salt, hash}；命中明文时返回 upgrade 凭据供调用方升级
+async function verifyPassword(stored, input) {
+  if (stored && typeof stored === 'object' && stored.salt && stored.hash) {
+    const { hash } = await hashPassword(input, stored.salt);
+    return { ok: timingSafeEqual(hash, stored.hash) };
+  }
+  if (typeof stored === 'string' && stored === input) {
+    return { ok: true, upgrade: await hashPassword(input) };
+  }
+  return { ok: false };
+}
+
+// 从请求体提取凭据：优先客户端已算好的 {salt, hash}，兼容明文 {password}（服务端代哈希）
+async function credFromBody(body) {
+  if (body && body.salt && body.hash) return { salt: String(body.salt), hash: String(body.hash) };
+  if (body && body.password) return await hashPassword(String(body.password));
+  return null;
+}
+
+// ─── 管理员密码读取（兼容 默认密码 / 旧明文 / 哈希 JSON） ──
+
+async function getAdminStored(env) {
+  const raw = await env.COACH_KV.get(ADMIN_PASSWORD_KEY);
+  if (!raw) return { stored: DEFAULT_ADMIN_PASSWORD, isDefault: true };
+  try {
+    const o = JSON.parse(raw);
+    if (o && o.salt && o.hash) return { stored: o, isDefault: raw === DEFAULT_ADMIN_PASSWORD };
+  } catch (e) {}
+  return { stored: raw, isDefault: raw === DEFAULT_ADMIN_PASSWORD };
 }
 
 async function checkAdmin(request, env) {
@@ -64,7 +179,7 @@ function coachHTML() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>教练课程查询</title>
+<title>🎾过网教练学校课时查询</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#F0F4FF;min-height:100vh;color:#1e293b;-webkit-tap-highlight-color:transparent}
@@ -121,6 +236,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
 .filter-group{display:flex;align-items:center;}
 .record-count{margin-left:auto;font-size:13px;color:var(--muted)}
 .record-count span{font-weight:700;color:var(--pri)}
+.data-meta{font-size:12px;color:var(--muted);margin-bottom:14px;display:none}
 
 /* ── 数据表格 ── */
 .table-wrap{background:#fff;border-radius:16px;overflow-x:auto;-webkit-overflow-scrolling:touch;box-shadow:0 1px 4px rgba(0,0,0,.06);border:1px solid var(--border)}
@@ -165,7 +281,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
   <div class="login-box">
     <div class="login-logo">
       <div class="icon">🏆</div>
-      <h1>教练课程查询系统</h1>
+      <h1>🎾过网教练学校课时查询系统</h1>
       <p>请输入您的账号登录</p>
     </div>
     <div class="form-group">
@@ -176,7 +292,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
       <label>登录密码</label>
       <input type="password" id="loginPwd" placeholder="请输入密码" autocomplete="current-password">
     </div>
-    <button class="btn-primary" onclick="doLogin()">登 录</button>
+    <button class="btn-primary" id="loginBtn" onclick="doLogin()">登 录</button>
     <div class="error-msg" id="loginErr"></div>
   </div>
 </div>
@@ -185,7 +301,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
   <nav class="navbar">
     <div class="navbar-brand">
       <div class="nav-icon">🏆</div>
-      <span>课程查询系统</span>
+      <span>🎾过网教练学校课时查询系统</span>
     </div>
     <div class="nav-right">
       <div class="coach-badge" id="coachNameBadge"></div>
@@ -194,6 +310,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
   </nav>
 
   <div class="main">
+    <div class="data-meta" id="dataMeta"></div>
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-icon blue">📋</div>
@@ -226,7 +343,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
           <option value="">全部</option>
         </select>
       </div>
-      <input type="text" id="filterSearch" placeholder="搜索课程或备注…" oninput="renderTable()">
+      <input type="text" id="filterSearch" placeholder="搜索课程或备注…">
       <div class="record-count">共 <span id="recordCount">0</span> 条记录</div>
     </div>
 
@@ -248,7 +365,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
       </table>
       <div class="empty-state" id="emptyState" style="display:none">
         <div class="empty-icon">📭</div>
-        <p>暂无匹配的课程记录</p>
+        <p id="emptyMsg">暂无匹配的课程记录</p>
       </div>
     </div>
   </div>
@@ -257,6 +374,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
 <script>
 let allRecords = [];
 let coachName = '';
+
+// HTML 转义，防 XSS：所有动态内容插入 innerHTML 前必须经过此函数
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 
 async function init() {
   try {
@@ -274,8 +394,10 @@ async function doLogin() {
   const name = document.getElementById('loginName').value.trim();
   const pwd  = document.getElementById('loginPwd').value;
   const errEl = document.getElementById('loginErr');
+  const btn = document.getElementById('loginBtn');
   errEl.style.display = 'none';
   if (!name || !pwd) { showErr('请填写完整信息'); return; }
+  btn.disabled = true; btn.textContent = '登录中…';
   try {
     const r = await fetch('/api/coach/login', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -287,6 +409,7 @@ async function doLogin() {
     showDashboard();
     await loadRecords();
   } catch(e) { showErr('网络错误，请重试'); }
+  finally { btn.disabled = false; btn.textContent = '登 录'; }
 }
 
 function showErr(msg) {
@@ -310,10 +433,19 @@ async function loadRecords() {
     const r = await fetch('/api/coach/records');
     const d = await r.json();
     allRecords = d.records || [];
+    const metaEl = document.getElementById('dataMeta');
+    if (d.meta && d.meta.updatedAt) {
+      metaEl.textContent = '数据更新于 ' + d.meta.updatedAt + ' · 共 ' + allRecords.length + ' 条记录';
+      metaEl.style.display = 'block';
+    }
     buildFilters();
     updateStats();
     renderTable();
-  } catch(e) {}
+  } catch(e) {
+    const empty = document.getElementById('emptyState');
+    empty.style.display = 'block';
+    document.getElementById('emptyMsg').textContent = '数据加载失败，请刷新页面重试';
+  }
 }
 
 function buildFilters() {
@@ -327,10 +459,8 @@ function buildFilters() {
 
 function updateStats(filtered) {
   const data = filtered !== undefined ? filtered : allRecords;
-  // 特长队/计时：课时单位是分钟，转换为小时
   const specialRecs = data.filter(r => r['类别'] === '特长队/计时');
   const specialHours = specialRecs.reduce((s,r) => s + (+r['课时'] || 0), 0) / 60;
-  // 常规课/天数：课时单位是天数，直接合计
   const regularRecs = data.filter(r => r['类别'] === '常规课/天数');
   const regularDays = regularRecs.reduce((s,r) => s + (+r['课时'] || 0), 0);
 
@@ -351,19 +481,22 @@ function renderTable() {
     if (search && !(r['课程']||'').toLowerCase().includes(search) && !(r['备注']||'').toLowerCase().includes(search)) return false;
     return true;
   });
-
   document.getElementById('recordCount').textContent = filtered.length;
   updateStats(filtered);
 
   const tbody = document.getElementById('tableBody');
   tbody.innerHTML = '';
   const empty = document.getElementById('emptyState');
-
-  if (filtered.length === 0) { empty.style.display='block'; return; }
+  if (filtered.length === 0) {
+    empty.style.display = 'block';
+    document.getElementById('emptyMsg').textContent = allRecords.length
+      ? '无匹配结果，试试清空筛选条件'
+      : '系统中暂无课程记录，等待管理员上传';
+    return;
+  }
   empty.style.display = 'none';
 
   const catColors = {'常规课/天数':'badge-blue','特长队/计时':'badge-green'};
-
   filtered.forEach(r => {
     const tr = document.createElement('tr');
     const cat = r['类别'] || '';
@@ -371,14 +504,14 @@ function renderTable() {
     const std = r['标准'];
     const stdText = (std !== undefined && std !== '') ? std : '-';
     tr.innerHTML = \`
-      <td>\${r['时间']||'-'}</td>
-      <td><strong>\${r['课程']||'-'}</strong></td>
-      <td><span class="badge \${badgeClass}">\${cat||'-'}</span></td>
-      <td style="color:var(--muted)">\${stdText}</td>
-      <td style="text-align:center;font-weight:600">\${r['课节数']||'-'}</td>
-      <td style="text-align:center;font-weight:600;color:var(--pri)">\${r['课时']||'-'}</td>
-      <td style="color:var(--muted)">\${r['备注']||'—'}</td>
-      <td><span class="badge badge-gray">\${r['年度']||'-'}</span></td>
+      <td>\${esc(r['时间'])||'-'}</td>
+      <td><strong>\${esc(r['课程'])||'-'}</strong></td>
+      <td><span class="badge \${badgeClass}">\${esc(cat)||'-'}</span></td>
+      <td style="color:var(--muted)">\${esc(stdText)}</td>
+      <td style="text-align:center;font-weight:600">\${esc(r['课节数'])||'-'}</td>
+      <td style="text-align:center;font-weight:600;color:var(--pri)">\${esc(r['课时'])||'-'}</td>
+      <td style="color:var(--muted)">\${esc(r['备注'])||'—'}</td>
+      <td><span class="badge badge-gray">\${esc(r['年度'])||'-'}</span></td>
     \`;
     tbody.appendChild(tr);
   });
@@ -386,6 +519,11 @@ function renderTable() {
 
 document.getElementById('loginPwd').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
 document.getElementById('loginName').addEventListener('keydown', e => { if(e.key==='Enter') document.getElementById('loginPwd').focus(); });
+let searchTimer = null;
+document.getElementById('filterSearch').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(renderTable, 150);
+});
 init();
 </script>
 </body>
@@ -400,7 +538,7 @@ function adminHTML() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>管理后台 - 教练课程系统</title>
+<title>管理后台 - 🎾过网教练学校课时查询系统</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"><\/script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -557,13 +695,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
     <div class="login-logo">
       <div class="icon">⚙️</div>
       <h1>系统管理后台</h1>
-      <p>教练课程查询系统</p>
+      <p>🎾过网教练学校课时查询系统</p>
     </div>
     <div class="form-group">
       <label>管理员密码</label>
       <input type="password" id="adminPwd" placeholder="请输入管理员密码" autocomplete="current-password">
     </div>
-    <button class="btn btn-primary" onclick="doAdminLogin()">登 录</button>
+    <button class="btn btn-primary" id="adminLoginBtn" onclick="doAdminLogin()">登 录</button>
     <div class="error-msg" id="loginErr"></div>
   </div>
 </div>
@@ -581,6 +719,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
   </nav>
 
   <div class="main">
+    <div id="defaultPwdWarn" style="display:none;background:#FEF2F2;border:1px solid #FECACA;color:#B91C1C;border-radius:12px;padding:12px 18px;font-size:14px;font-weight:600;margin-bottom:18px">⚠ 正在使用默认密码 123456，请立即前往【系统设置】修改密码</div>
     <div class="tabs">
       <button class="tab active" onclick="switchTab('users',this)">👥 用户管理</button>
       <button class="tab" onclick="switchTab('data',this)">📊 数据管理</button>
@@ -627,7 +766,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
           <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" onchange="handleFile(this)">
           <div class="upload-icon">📤</div>
           <h3>点击或拖拽上传 Excel 文件</h3>
-          <p>支持 .xlsx / .xls / .csv 格式，上传后将覆盖全部旧数据</p>
+          <p>支持 .xlsx / .xls / .csv 格式，上传后将直接覆盖全部旧数据（无备份，请先确认文件无误）</p>
         </div>
         <div class="upload-info" id="uploadInfo">
           <div class="file-icon">📊</div>
@@ -702,6 +841,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
         <button class="btn btn-primary" style="margin-top:8px" onclick="changePwd()">更新密码</button>
         <div class="status-bar" id="pwdStatus"></div>
       </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">📝</span>登录与操作日志 (最新200条)</div>
+        <div class="preview-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 200px;">时间</th>
+                <th>内容</th>
+                <th style="width: 80px;">来源</th>
+              </tr>
+            </thead>
+            <tbody id="loginLogsBody">
+              <tr><td colspan="3" style="text-align:center;color:var(--muted)">加载中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
   
@@ -715,7 +872,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
     </div>
     <div class="form-group">
       <label>登录密码</label>
-      <input type="text" id="editPwd" placeholder="登录密码">
+      <input type="password" id="editPwd" placeholder="设置登录密码">
     </div>
     <div class="status-bar" id="editStatus"></div>
     <div class="modal-actions">
@@ -729,11 +886,52 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
 let parsedRecords = [];
 let adminAllRecords = [];
 
+// HTML 转义，防 XSS：所有动态内容插入 innerHTML 前必须经过此函数
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+
+// ==== STAT_BY_COACH_BEGIN ====
+// 统计口径：一条记录可能对应多位教练，课时/常规课天数须按「教练人次」累加
+// 例：「张三,李四」的 1 条常规课 → 张三 +1 天、李四 +1 天，总计 +2 天
+// 这样总计恰好等于「按教练查询详情」里各教练个人合计之和
+function coachCountOf(r) {
+  const list = String(r['教练'] == null ? '' : r['教练']).split(',').map(x => x.trim()).filter(Boolean);
+  const n = new Set(list).size;   // 同名去重：与「按教练查询详情」逐人累计口径保持一致
+  return Math.max(1, n);          // 教练列为空时按 1 计，避免该条数据静默消失
+}
+function sumByPerson(records, cat) {
+  return records.reduce((s, r) => s + (r['类别'] === cat ? (+r['课时'] || 0) * coachCountOf(r) : 0), 0);
+}
+// ==== STAT_BY_COACH_END ====
+
+// 密码哈希（在浏览器端完成，服务端零 CPU 负担）
+const PBKDF2_ITERATIONS = 10000;
+async function hashPwd(password, saltHex) {
+  const enc = new TextEncoder();
+  let salt;
+  if (saltHex) {
+    salt = new Uint8Array(saltHex.match(/.{2}/g).map(h => parseInt(h, 16)));
+  } else {
+    salt = crypto.getRandomValues(new Uint8Array(16));
+  }
+  const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: PBKDF2_ITERATIONS }, key, 256);
+  const toHex = arr => [...arr].map(b => b.toString(16).padStart(2, '0')).join('');
+  return { salt: toHex(salt), hash: toHex(new Uint8Array(bits)) };
+}
+
+let currentUsers = [];
+
+function showDefaultWarn(show) {
+  document.getElementById('defaultPwdWarn').style.display = show ? 'block' : 'none';
+}
+
 // ─── 认证 ───
 async function doAdminLogin() {
   const pwd = document.getElementById('adminPwd').value;
   const errEl = document.getElementById('loginErr');
+  const btn = document.getElementById('adminLoginBtn');
   errEl.style.display = 'none';
+  btn.disabled = true; btn.textContent = '登录中…';
   try {
     const r = await fetch('/api/admin/login', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -741,10 +939,12 @@ async function doAdminLogin() {
     });
     const d = await r.json();
     if (!r.ok) { errEl.textContent = d.error||'密码错误'; errEl.style.display='block'; return; }
+    showDefaultWarn(!!d.defaultPwd);
     document.getElementById('loginPage').style.display = 'none';
     document.getElementById('adminPage').style.display = 'block';
     loadUsers(); loadCurrentData();
   } catch(e) { errEl.textContent='网络错误'; errEl.style.display='block'; }
+  finally { btn.disabled = false; btn.textContent = '登 录'; }
 }
 
 async function doLogout() {
@@ -756,6 +956,8 @@ async function checkAdminAuth() {
   try {
     const r = await fetch('/api/admin/users');
     if (r.ok) {
+      const d = await r.json().catch(() => ({}));
+      showDefaultWarn(!!d.defaultPwd);
       document.getElementById('loginPage').style.display = 'none';
       document.getElementById('adminPage').style.display = 'block';
       loadUsers(); loadCurrentData();
@@ -773,6 +975,7 @@ function switchTab(name, btn) {
   document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   if (name==='data') loadCurrentData();
+  if (name==='settings') loadLogs();
 }
 
 // ─── 用户管理 ───
@@ -781,52 +984,42 @@ async function loadUsers() {
     const r = await fetch('/api/admin/users');
     const d = await r.json();
     renderUsers(d.users||[]);
-  } catch(e) {}
+  } catch(e) {
+    document.getElementById('userList').innerHTML = '<div style="text-align:center;color:#ef4444;padding:20px;font-size:14px">加载失败，请刷新页面重试</div>';
+  }
 }
 
 function renderUsers(users) {
+  currentUsers = users;
   const el = document.getElementById('userList');
   if (!users.length) {
     el.innerHTML = '<div style="text-align:center;color:var(--muted);padding:20px;font-size:14px">暂无教练账号，请在下方添加</div>';
     return;
   }
-  el.innerHTML = users.map(u => {
-    const initial = u.name.slice(0,1);
-    const safeN = u.name.replace(/'/g,"\\\\'");
-    const safeP = (u.password||'').replace(/'/g,"\\\\'");
-    return \`<div class="user-item" id="ui-\${safeN}">
+  el.innerHTML = users.map((u, i) => {
+    const initial = esc((u.name || '').slice(0,1));
+    return \`<div class="user-item">
       <div class="user-name">
         <div class="avatar">\${initial}</div>
         <div class="user-info">
-          <strong>\${u.name}</strong>
+          <strong>\${esc(u.name)}</strong>
           <div class="pwd-row">
-            <span class="pwd-dots" id="pwd-\${safeN}">••••••</span>
-            <span class="pwd-plain" id="pwdp-\${safeN}" style="display:none">\${u.password||''}</span>
-            <button class="eye-btn" onclick="togglePwd('\${safeN}')" title="显示/隐藏密码">👁</button>
+            <span class="pwd-dots">密码已加密存储</span>
           </div>
         </div>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-edit" onclick="openEdit('\${safeN}','\${safeP}')">编辑</button>
-        <button class="btn btn-danger" onclick="deleteUser('\${safeN}')">删除</button>
+        <button class="btn btn-edit" data-act="edit" data-i="\${i}">编辑</button>
+        <button class="btn btn-danger" data-act="del" data-i="\${i}">删除</button>
       </div>
     </div>\`;
   }).join('');
 }
 
-function togglePwd(name) {
-  const dots  = document.getElementById('pwd-'  + name);
-  const plain = document.getElementById('pwdp-' + name);
-  if (!dots || !plain) return;
-  const showing = plain.style.display !== 'none';
-  dots.style.display  = showing ? 'inline' : 'none';
-  plain.style.display = showing ? 'none'   : 'inline';
-}
-
-function openEdit(name, password) {
+function openEdit(name) {
   document.getElementById('editOldName').value = name;
   document.getElementById('editName').value    = name;
-  document.getElementById('editPwd').value     = password;
+  document.getElementById('editPwd').value     = '';
   document.getElementById('editStatus').className = 'status-bar';
   document.getElementById('editModal').style.display = 'flex';
 }
@@ -842,9 +1035,11 @@ async function saveEdit() {
   const status   = document.getElementById('editStatus');
   if (!newName || !newPwd) { showStatus(status,'请填写完整信息','error'); return; }
   try {
+    showStatus(status, '⏳ 正在保存…', 'info');
+    const cred = await hashPwd(newPwd);
     const r = await fetch('/api/admin/users/' + encodeURIComponent(oldName), {
       method:'PUT', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({newName, newPassword: newPwd})
+      body: JSON.stringify({newName, salt: cred.salt, hash: cred.hash})
     });
     const d = await r.json();
     if (!r.ok) { showStatus(status, d.error||'保存失败','error'); return; }
@@ -859,9 +1054,11 @@ async function addUser() {
   const status = document.getElementById('userStatus');
   if (!name||!pwd) { showStatus(status,'请填写姓名和密码','error'); return; }
   try {
+    showStatus(status, '⏳ 正在添加…', 'info');
+    const cred = await hashPwd(pwd);
     const r = await fetch('/api/admin/users', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({name, password:pwd})
+      body: JSON.stringify({name, salt: cred.salt, hash: cred.hash})
     });
     const d = await r.json();
     if (!r.ok) { showStatus(status, d.error||'添加失败','error'); return; }
@@ -901,16 +1098,21 @@ async function uploadBatchUsers() {
         return;
       }
 
-      showStatus(status, \`⏳ 正在导入 \${users.length} 个账号...\`, 'info');
+      showStatus(status, \`⏳ 正在加密并导入 \${users.length} 个账号...\`, 'info');
+      const creds = [];
+      for (const u of users) {
+        const c = await hashPwd(u.password);
+        creds.push({name: u.name, salt: c.salt, hash: c.hash});
+      }
       const res = await fetch('/api/admin/users/batch', {
         method: 'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({users})
+        body: JSON.stringify({users: creds})
       });
       const d = await res.json();
       if(!res.ok) { showStatus(status, d.error||'导入失败', 'error'); return; }
 
-      showStatus(status, \`✅ 成功批量导入 \${users.length} 个教练账号\`, 'success');
+      showStatus(status, \`✅ 成功批量导入 \${d.count} 个教练账号\`, 'success');
       input.value = '';
       loadUsers();
     } catch(err) {
@@ -936,7 +1138,6 @@ function handleFile(input) {
   document.getElementById('uploadActions').style.display = 'flex';
   document.getElementById('uploadStatus').className = 'status-bar';
   document.getElementById('previewCard').style.display = 'none';
-
   const reader = new FileReader();
   reader.onload = e => {
     try {
@@ -968,10 +1169,8 @@ function showPreview(records) {
   card.style.display = 'block';
   const coaches = new Set();
   records.forEach(r => { (r['教练']||'').split(',').forEach(c => { if(c.trim()) coaches.add(c.trim()); }); });
-  
-  const specialHours = records.filter(r => r['类别'] === '特长队/计时').reduce((s,r) => s + (+r['课时'] || 0), 0) / 60;
-  const regularDays = records.filter(r => r['类别'] === '常规课/天数').reduce((s,r) => s + (+r['课时'] || 0), 0);
-
+  const specialHours = sumByPerson(records, '特长队/计时') / 60;
+  const regularDays = sumByPerson(records, '常规课/天数');
   document.getElementById('dataStatsBar').innerHTML = \`
     <div class="data-stat"><div class="num">\${records.length}</div><div class="lbl">总条目</div></div>
     <div class="data-stat"><div class="num">\${coaches.size}</div><div class="lbl">涉及教练</div></div>
@@ -980,10 +1179,26 @@ function showPreview(records) {
   \`;
   const cols = ['时间','课程','类别','标准','教练','课节数','课时','备注','年度'];
   const preview = records.slice(0,8);
-  document.getElementById('previewTable').innerHTML = \`
+  // 上传守护：统计口径外的数据提前提醒
+  const badCat = records.filter(r => { const c = String(r['类别']||'').trim(); return c && c !== '常规课/天数' && c !== '特长队/计时'; }).length;
+  const noCoach = records.filter(r => !String(r['教练']||'').trim()).length;
+  const badNum = records.filter(r => {
+    const v = r['课时'];
+    if (v === '' || v === undefined || v === null) return false;
+    return !isFinite(Number(v));
+  }).length;
+  let warnHtml = '';
+  if (badCat > 0 || noCoach > 0 || badNum > 0) {
+    const msgs = [];
+    if (badCat > 0) msgs.push('⚠ ' + badCat + ' 条记录的「类别」无法识别（需为"常规课/天数"或"特长队/计时"），这些记录将不计入课时/天数统计');
+    if (noCoach > 0) msgs.push('⚠ ' + noCoach + ' 条记录的「教练」列为空，教练端将看不到这些记录（仍按 1 次计入总计）');
+    if (badNum > 0) msgs.push('⚠ ' + badNum + ' 条记录的「课时」不是纯数字（如"90分钟"），这些记录会被静默按 0 计入统计，请先改成数字');
+    warnHtml = '<div style="background:#FEF3C7;border:1px solid #FDE68A;color:#92400E;border-radius:10px;padding:10px 14px;font-size:13px;margin-bottom:14px;line-height:1.9">' + msgs.map(m => esc(m)).join('<br>') + '</div>';
+  }
+  document.getElementById('previewTable').innerHTML = warnHtml + \`
     <table>
       <thead><tr>\${cols.map(c=>\`<th>\${c}</th>\`).join('')}</tr></thead>
-      <tbody>\${preview.map(r=>\`<tr>\${cols.map(c=>\`<td>\${r[c]!==undefined?r[c]:''}</td>\`).join('')}</tr>\`).join('')}
+      <tbody>\${preview.map(r=>\`<tr>\${cols.map(c=>\`<td>\${esc(r[c]!==undefined?r[c]:'')}</td>\`).join('')}</tr>\`).join('')}
       \${records.length>8 ? \`<tr><td colspan="9" style="text-align:center;color:var(--muted);font-style:italic;padding:10px">…另有 \${records.length-8} 条记录</td></tr>\` : ''}
       </tbody>
     </table>\`;
@@ -992,7 +1207,9 @@ function showPreview(records) {
 async function submitData() {
   if (!parsedRecords.length) return;
   const status = document.getElementById('uploadStatus');
+  const btn = document.querySelector('#uploadActions .btn-success');
   showStatus(status, '⏳ 正在上传…', 'info');
+  btn.disabled = true; btn.textContent = '⏳ 上传中…';
   try {
     const r = await fetch('/api/admin/upload', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -1000,10 +1217,11 @@ async function submitData() {
     });
     const d = await r.json();
     if (!r.ok) { showStatus(status, d.error||'上传失败', 'error'); return; }
-    showStatus(status, \`✅ 成功上传 \${d.count} 条记录，旧数据已覆盖！\`, 'success');
+    showStatus(status, \`✅ 成功上传 \${d.count} 条记录，已覆盖原有数据\`, 'success');
     loadCurrentData();
     clearFile();
   } catch(e) { showStatus(status,'网络错误','error'); }
+  finally { btn.disabled = false; btn.textContent = '✅ 确认上传覆盖数据'; }
 }
 
 function clearFile() {
@@ -1020,38 +1238,41 @@ async function loadCurrentData() {
     const d = await r.json();
     const records = d.records||[];
     adminAllRecords = records; // 保存供按教练筛选使用
-    
+
     const coaches = new Set();
     records.forEach(r => { (r['教练']||'').split(',').forEach(c => { if(c.trim()) coaches.add(c.trim()); }); });
     const el = document.getElementById('currentDataInfo');
-    
     if (!records.length) {
       el.innerHTML = '<span style="color:var(--muted)">系统中暂无数据，请上传 Excel 文件</span>';
       document.getElementById('coachDataCard').style.display = 'none';
       return;
     }
-    
-    const specialHours = records.filter(r => r['类别'] === '特长队/计时').reduce((s,r) => s + (+r['课时'] || 0), 0) / 60;
-    const regularDays = records.filter(r => r['类别'] === '常规课/天数').reduce((s,r) => s + (+r['课时'] || 0), 0);
 
+    const specialHours = sumByPerson(records, '特长队/计时') / 60;
+    const regularDays = sumByPerson(records, '常规课/天数');
+    let extra = '';
+    if (d.meta && d.meta.updatedAt) {
+      extra += '<div style="margin-top:10px;font-size:12px;color:var(--muted)">数据更新于 ' + esc(d.meta.updatedAt) + ' ｜ 统计已按教练人次累加（多人条目分别计入各教练）</div>';
+    }
     el.innerHTML = \`
       <div class="data-stats" style="margin-bottom:0">
         <div class="data-stat"><div class="num">\${records.length}</div><div class="lbl">总条目数</div></div>
         <div class="data-stat"><div class="num">\${coaches.size}</div><div class="lbl">涉及教练</div></div>
         <div class="data-stat"><div class="num">\${specialHours.toFixed(1)}</div><div class="lbl">课时 (小时)</div></div>
         <div class="data-stat"><div class="num">\${regularDays.toFixed(1)}</div><div class="lbl">常规课 (天数)</div></div>
-      </div>\`;
-      
+      </div>\${extra}\`;
     // 渲染筛选下拉框
     const filter = document.getElementById('adminCoachFilter');
     filter.innerHTML = '<option value="">请选择教练查看详细明细...</option>';
     Array.from(coaches).sort().forEach(c => {
-      filter.innerHTML += \`<option value="\${c}">\${c}</option>\`;
+      filter.innerHTML += \`<option value="\${esc(c)}">\${esc(c)}</option>\`;
     });
-    
+
     document.getElementById('coachDataCard').style.display = 'block';
     renderAdminCoachTable();
-  } catch(e) {}
+  } catch(e) {
+    document.getElementById('currentDataInfo').innerHTML = '<span style="color:#ef4444">数据加载失败，请刷新页面重试</span>';
+  }
 }
 
 function renderAdminCoachTable() {
@@ -1070,11 +1291,9 @@ function renderAdminCoachTable() {
     const cArr = String(r['教练']||'').split(',').map(x=>x.trim());
     return cArr.includes(coach);
   });
-  
   const specialHours = filtered.filter(r => r['类别'] === '特长队/计时').reduce((s,r) => s + (+r['课时'] || 0), 0) / 60;
   const regularDays = filtered.filter(r => r['类别'] === '常规课/天数').reduce((s,r) => s + (+r['课时'] || 0), 0);
   const lessons = filtered.reduce((s,r) => s + (+r['课节数'] || 0), 0);
-  
   statsEl.innerHTML = \`
     <div class="data-stat"><div class="num" style="color:var(--pri)">\${filtered.length}</div><div class="lbl">课程条目</div></div>
     <div class="data-stat"><div class="num" style="color:#059669">\${specialHours.toFixed(2)}</div><div class="lbl">课时 (小时)</div></div>
@@ -1093,14 +1312,14 @@ function renderAdminCoachTable() {
        const std = r['标准'];
        const stdText = (std !== undefined && std !== '') ? std : '-';
        return \`<tr>
-         <td>\${r['时间']||'-'}</td>
-         <td><strong>\${r['课程']||'-'}</strong></td>
-         <td><span class="badge-cat \${badgeClass}">\${cat||'-'}</span></td>
-         <td style="color:var(--muted)">\${stdText}</td>
-         <td style="text-align:center;font-weight:600">\${r['课节数']||'-'}</td>
-         <td style="text-align:center;font-weight:600;color:var(--pri)">\${r['课时']||'-'}</td>
-         <td style="color:var(--muted)">\${r['备注']||'—'}</td>
-         <td><span class="badge-cat badge-gray">\${r['年度']||'-'}</span></td>
+         <td>\${esc(r['时间'])||'-'}</td>
+         <td><strong>\${esc(r['课程'])||'-'}</strong></td>
+         <td><span class="badge-cat \${badgeClass}">\${esc(cat)||'-'}</span></td>
+         <td style="color:var(--muted)">\${esc(stdText)}</td>
+         <td style="text-align:center;font-weight:600">\${esc(r['课节数'])||'-'}</td>
+         <td style="text-align:center;font-weight:600;color:var(--pri)">\${esc(r['课时'])||'-'}</td>
+         <td style="color:var(--muted)">\${esc(r['备注'])||'—'}</td>
+         <td><span class="badge-cat badge-gray">\${esc(r['年度'])||'-'}</span></td>
        </tr>\`;
      }).join('');
   }
@@ -1124,10 +1343,35 @@ async function changePwd() {
     const d = await r.json();
     if (!r.ok) { showStatus(status, d.error||'修改失败','error'); return; }
     showStatus(status, '✅ 密码修改成功','success');
+    showDefaultWarn(false);
     document.getElementById('oldPwd').value='';
     document.getElementById('newPwd').value='';
     document.getElementById('newPwd2').value='';
   } catch(e) { showStatus(status,'网络错误','error'); }
+}
+
+async function loadLogs() {
+  const tbody = document.getElementById('loginLogsBody');
+  tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--muted)">加载中…</td></tr>';
+  try {
+    const r = await fetch('/api/admin/logs');
+    const d = await r.json();
+    if (r.ok && d.logs && d.logs.length > 0) {
+      tbody.innerHTML = d.logs.map(log => \`
+        <tr>
+          <td style="color:var(--muted); font-family:monospace; font-size: 13px;">\${esc(log.time)}</td>
+          <td style="font-weight:600; color:var(--pri);">\${esc(log.name)}</td>
+          <td>\${log.type === 'admin'
+            ? '<span style="background:#EEF2FF;color:#4F46E5;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600">管理员</span>'
+            : '<span style="background:#F1F5F9;color:#64748b;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600">教练</span>'}</td>
+        </tr>
+      \`).join('');
+    } else {
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--muted)">暂无登录记录</td></tr>';
+    }
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#ef4444">加载失败</td></tr>';
+  }
 }
 
 // ─── 工具 ───
@@ -1146,6 +1390,16 @@ zone.addEventListener('drop', e => {
   if (file) { document.getElementById('fileInput').files = e.dataTransfer.files; handleFile(document.getElementById('fileInput')); }
 });
 
+// 用户列表事件委托（姓名不再进 onclick，杜绝注入）
+document.getElementById('userList').addEventListener('click', e => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const u = currentUsers[parseInt(btn.dataset.i, 10)];
+  if (!u) return;
+  if (btn.dataset.act === 'edit') openEdit(u.name);
+  if (btn.dataset.act === 'del') deleteUser(u.name);
+});
+
 checkAdminAuth();
 </script>
 </body>
@@ -1161,16 +1415,15 @@ export default {
     const method = request.method;
 
     if (method === 'OPTIONS') {
-      return new Response(null, {
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
-        },
-      });
+      // 纯同源系统：不再返回开放 CORS 头（curl/脚本调用不受影响）
+      return new Response(null, { status: 204 });
     }
 
     try {
+      // 请求体体积限制，防止误传超大文件耗尽 KV 配额
+      const contentLength = parseInt(request.headers.get('Content-Length') || '0', 10);
+      if (contentLength > 5 * 1024 * 1024) return json({ error: '请求体过大（上限 5MB）' }, 413);
+
       // ── 页面路由 ──
       if (path === '/'      && method === 'GET') return html(coachHTML());
       if (path === '/admin' && method === 'GET') return html(adminHTML());
@@ -1180,14 +1433,40 @@ export default {
         const { name, password } = await request.json();
         if (!name || !password) return json({ error: '参数不完整' }, 400);
 
-        const raw   = await env.COACH_KV.get(USERS_KEY);
-        const users = raw ? JSON.parse(raw) : {};
+        const scope = 'coach:' + name;
+        if ((await getFailCount(env, scope)) >= LOCK_LIMIT) {
+          return json({ error: '尝试次数过多，请 10 分钟后再试' }, 429);
+        }
 
-        if (!users[name] || users[name].password !== password) {
+        const raw   = await env.COACH_KV.get(USERS_KEY);
+        const users = parseKV(raw, {});
+        const u = users[name];
+
+        if (!u) {
+          await recordFail(env, scope);
           return json({ error: '用户名或密码错误' }, 401);
         }
+        const v = await verifyPassword(
+          (u && typeof u === 'object') ? (u.salt ? u : u.password) : u,
+          password
+        );
+        if (!v.ok) {
+          await recordFail(env, scope);
+          return json({ error: '用户名或密码错误' }, 401);
+        }
+        await clearFails(env, scope);
+
+        // 旧明文密码自动升级为哈希存储
+        if (v.upgrade) {
+          users[name] = v.upgrade;
+          await env.COACH_KV.put(USERS_KEY, JSON.stringify(users));
+        }
+
         const token = generateToken();
         await env.COACH_KV.put(`cch:${token}`, name, { expirationTtl: SESSION_TTL });
+
+        await addLog(env, name, 'coach');
+
         return new Response(JSON.stringify({ success: true, name }), {
           headers: {
             'Content-Type': 'application/json',
@@ -1217,25 +1496,40 @@ export default {
         const name = await checkCoach(request, env);
         if (!name) return json({ error: '未登录' }, 401);
 
-        const raw     = await env.COACH_KV.get(RECORDS_KEY);
-        const all     = raw ? JSON.parse(raw) : [];
-        const matched = all.filter(r => {
+        const all     = parseKV(await env.COACH_KV.get(RECORDS_KEY), []);
+        const matched = (Array.isArray(all) ? all : []).filter(r => {
+          if (!r || typeof r !== 'object') return false;
           const coaches = String(r['教练'] || '').split(',').map(c => c.trim());
           return coaches.includes(name);
         });
         // 隐藏"教练"字段
         const sanitized = matched.map(({ 教练, ...rest }) => rest);
-        return json({ records: sanitized, name });
+        const meta = parseKV(await env.COACH_KV.get(META_KEY), null);
+        return json({ records: sanitized, name, meta });
       }
 
       // ── 管理员 API ──
       if (path === '/api/admin/login' && method === 'POST') {
         const { password } = await request.json();
-        const correct = await getAdminPwd(env);
-        if (password !== correct) return json({ error: '密码错误' }, 401);
+        const scope = 'admin:' + (request.headers.get('CF-Connecting-IP') || 'unknown');
+        if ((await getFailCount(env, scope)) >= LOCK_LIMIT) {
+          return json({ error: '尝试次数过多，请 10 分钟后再试' }, 429);
+        }
+        const { stored, isDefault } = await getAdminStored(env);
+        const v = await verifyPassword(stored, password);
+        if (!v.ok) {
+          await recordFail(env, scope);
+          return json({ error: '密码错误' }, 401);
+        }
+        await clearFails(env, scope);
+        // 旧明文密码自动升级为哈希存储
+        if (v.upgrade) {
+          await env.COACH_KV.put(ADMIN_PASSWORD_KEY, JSON.stringify(v.upgrade));
+        }
         const token = generateToken();
         await env.COACH_KV.put(`adm:${token}`, '1', { expirationTtl: SESSION_TTL });
-        return new Response(JSON.stringify({ success: true }), {
+        await addLog(env, '管理员登录', 'admin');
+        return new Response(JSON.stringify({ success: true, defaultPwd: isDefault }), {
           headers: {
             'Content-Type': 'application/json',
             'Set-Cookie': setCookieHeader('adm_tok', token, SESSION_TTL),
@@ -1260,89 +1554,107 @@ export default {
           return json({ error: '未授权，请先登录' }, 401);
         }
 
-        // 获取用户列表
+        // --- 获取教练登录日志 ---
+        if (path === '/api/admin/logs' && method === 'GET') {
+          const logs = parseKV(await env.COACH_KV.get('login_logs'), []);
+          return json({ logs: Array.isArray(logs) ? logs : [] });
+        }
+
+        // 修改管理员密码
+        if (path === '/api/admin/password' && method === 'POST') {
+          const { oldPassword, newPassword } = await request.json();
+          const { stored } = await getAdminStored(env);
+          const v = await verifyPassword(stored, oldPassword);
+          if (!v.ok) return json({ error: '原密码错误' }, 400);
+          if (!newPassword || newPassword.length < 6) return json({ error: '新密码长度至少 6 位' }, 400);
+          await env.COACH_KV.put(ADMIN_PASSWORD_KEY, JSON.stringify(await hashPassword(newPassword)));
+          await addLog(env, '管理员修改密码', 'admin');
+          return json({ success: true });
+        }
+
+        // 获取用户列表（密码以哈希存储，不再返回明文）
         if (path === '/api/admin/users' && method === 'GET') {
-          const raw   = await env.COACH_KV.get(USERS_KEY);
-          const users = raw ? JSON.parse(raw) : {};
-          return json({ users: Object.keys(users).map(n => ({ name: n, password: users[n].password })) });
+          const users = parseKV(await env.COACH_KV.get(USERS_KEY), {});
+          const { isDefault } = await getAdminStored(env);
+          return json({ users: Object.keys(users).map(n => ({ name: n })), defaultPwd: isDefault });
         }
 
         // 添加单个用户
         if (path === '/api/admin/users' && method === 'POST') {
-          const { name, password } = await request.json();
-          if (!name || !password) return json({ error: '参数不完整' }, 400);
-          const raw   = await env.COACH_KV.get(USERS_KEY);
-          const users = raw ? JSON.parse(raw) : {};
-          users[name] = { password };
+          const body = await request.json();
+          const cred = await credFromBody(body);
+          if (!body || !body.name || !cred) return json({ error: '参数不完整' }, 400);
+          const users = parseKV(await env.COACH_KV.get(USERS_KEY), {});
+          users[body.name] = cred;
           await env.COACH_KV.put(USERS_KEY, JSON.stringify(users));
+          await addLog(env, `管理员添加教练「${body.name}」`, 'admin');
           return json({ success: true });
         }
 
         // 批量添加用户
         if (path === '/api/admin/users/batch' && method === 'POST') {
-          const { users } = await request.json();
-          if (!Array.isArray(users)) return json({ error: '参数不完整' }, 400);
-          
-          const raw   = await env.COACH_KV.get(USERS_KEY);
-          const existingUsers = raw ? JSON.parse(raw) : {};
-          
-          for (const u of users) {
-            if (u.name && u.password) {
-              existingUsers[u.name] = { password: u.password };
-            }
+          const { users: incoming } = await request.json();
+          if (!Array.isArray(incoming)) return json({ error: '参数不完整' }, 400);
+
+          const existingUsers = parseKV(await env.COACH_KV.get(USERS_KEY), {});
+
+          let imported = 0;
+          for (const u of incoming) {
+            if (!u.name) continue;
+            const cred = await credFromBody(u);
+            if (cred) { existingUsers[u.name] = cred; imported++; }
           }
           await env.COACH_KV.put(USERS_KEY, JSON.stringify(existingUsers));
-          return json({ success: true, count: users.length });
+          await addLog(env, `管理员批量导入 ${imported} 个账号`, 'admin');
+          return json({ success: true, count: imported });
         }
 
         // 删除用户
         if (path.startsWith('/api/admin/users/') && method === 'DELETE') {
           const name  = decodeURIComponent(path.slice('/api/admin/users/'.length));
-          const raw   = await env.COACH_KV.get(USERS_KEY);
-          const users = raw ? JSON.parse(raw) : {};
+          const users = parseKV(await env.COACH_KV.get(USERS_KEY), {});
           delete users[name];
           await env.COACH_KV.put(USERS_KEY, JSON.stringify(users));
+          await addLog(env, `管理员删除教练「${name}」`, 'admin');
           return json({ success: true });
         }
 
         // 编辑用户（改名或改密码）
         if (path.startsWith('/api/admin/users/') && method === 'PUT') {
           const oldName = decodeURIComponent(path.slice('/api/admin/users/'.length));
-          const { newName, newPassword } = await request.json();
-          if (!newName || !newPassword) return json({ error: '参数不完整' }, 400);
-          const raw   = await env.COACH_KV.get(USERS_KEY);
-          const users = raw ? JSON.parse(raw) : {};
+          const body = await request.json();
+          const cred = await credFromBody(body);
+          if (!body || !body.newName || !cred) return json({ error: '参数不完整' }, 400);
+          const users = parseKV(await env.COACH_KV.get(USERS_KEY), {});
           if (!users[oldName]) return json({ error: '用户不存在' }, 404);
           // 如果改了名字，删旧键建新键
-          if (newName !== oldName) delete users[oldName];
-          users[newName] = { password: newPassword };
+          if (body.newName !== oldName) delete users[oldName];
+          users[body.newName] = cred;
           await env.COACH_KV.put(USERS_KEY, JSON.stringify(users));
+          await addLog(env, `管理员编辑教练「${oldName}」`, 'admin');
           return json({ success: true });
         }
 
-        // 上传数据（覆盖）
+        // 上传数据（覆盖全部旧数据）
         if (path === '/api/admin/upload' && method === 'POST') {
           const { records } = await request.json();
           if (!Array.isArray(records)) return json({ error: '数据格式错误' }, 400);
+          // 记录必须是对象：否则前端读取「教练」列时会抛错，导致数据管理页整页加载失败
+          if (records.some(r => !r || typeof r !== 'object' || Array.isArray(r))) {
+            return json({ error: '数据格式错误：存在非对象记录，请重新导出 Excel 后再上传' }, 400);
+          }
           await env.COACH_KV.put(RECORDS_KEY, JSON.stringify(records));
+          await env.COACH_KV.put(META_KEY, JSON.stringify({ updatedAt: bjTime(), count: records.length }));
+          await addLog(env, `管理员上传数据（${records.length} 条）`, 'admin');
           return json({ success: true, count: records.length });
         }
 
         // 查看当前数据
         if (path === '/api/admin/records' && method === 'GET') {
-          const raw = await env.COACH_KV.get(RECORDS_KEY);
-          const records = raw ? JSON.parse(raw) : [];
-          return json({ records, count: records.length });
-        }
-
-        // 修改管理员密码
-        if (path === '/api/admin/password' && method === 'POST') {
-          const { oldPassword, newPassword } = await request.json();
-          const current = await getAdminPwd(env);
-          if (oldPassword !== current) return json({ error: '原密码错误' }, 400);
-          if (!newPassword || newPassword.length < 6) return json({ error: '新密码长度至少 6 位' }, 400);
-          await env.COACH_KV.put(ADMIN_PASSWORD_KEY, newPassword);
-          return json({ success: true });
+          const recs = parseKV(await env.COACH_KV.get(RECORDS_KEY), []);
+          const records = Array.isArray(recs) ? recs : [];
+          const meta = parseKV(await env.COACH_KV.get(META_KEY), null);
+          return json({ records, count: records.length, meta });
         }
       }
 
